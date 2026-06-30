@@ -6,9 +6,9 @@
 <title>Crash Buying Simulator</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
 <style>
   html, body { margin: 0; padding: 0; background: #f8f9fb; }
   * { box-sizing: border-box; }
@@ -16,9 +16,25 @@
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root">
+  <div style="font-family: -apple-system, sans-serif; padding: 40px; color: #64748b; text-align: center;">
+    Loading Crash Buying Simulator…
+    <div style="font-size: 12px; margin-top: 8px; color: #94a3b8;">If this message doesn't disappear within a few seconds, open the browser console (Cmd+Option+J / F12) and let me know what error appears.</div>
+  </div>
+</div>
 
-<script type="text/babel" data-presets="env,react">
+<script>
+  window.addEventListener('error', function (e) {
+    var root = document.getElementById('root');
+    if (root) {
+      root.innerHTML = '<div style="font-family: monospace; padding: 24px; color: #dc2626; background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; margin: 20px; white-space: pre-wrap;">' +
+        '<strong>Script error:</strong>\n' + (e.message || 'Unknown error') +
+        (e.filename ? '\n\nFile: ' + e.filename + ':' + e.lineno : '') + '</div>';
+    }
+  });
+</script>
+
+<script type="text/babel">
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ---------- Constants ----------
@@ -713,8 +729,14 @@ const styles = {
   deleteBtn: { border: "none", background: "none", color: "#94a3b8", fontSize: 16, cursor: "pointer", lineHeight: 1 },
 };
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<CrashBuyingSimulator />);
+try {
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(<CrashBuyingSimulator />);
+} catch (err) {
+  document.getElementById("root").innerHTML =
+    '<div style="font-family: monospace; padding: 24px; color: #dc2626;">Render error: ' + err.message + '</div>';
+  console.error(err);
+}
 </script>
 </body>
 </html>
