@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Crash Buying Simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #f8f9fb; }
+  * { box-sizing: border-box; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+// ---------- Constants ----------
+const STARTING_CASH = 200000;
+const TICKER = "QQQ";
+const STORAGE_KEY = "cbs_transactions_v1";
+const PRICE_CACHE_KEY = "cbs_price_cache_v1";
+
+const TIERS = [
+  { drawdown: 10, pct: 10 },
+  { drawdown: 15, pct: 15 },
+  { drawdown: 20, pct: 20 },
+  { drawdown: 25, pct: 25 },
+  { drawdown: 30, pct: 30 },
+];
+
+const EVENTS = [
+  { label: "2018 Trade War", date: "2018-10-01" },
+  { label: "2020 Covid", date: "2020-02-20" },
+  { label: "2022 Inflation", date: "2022-01-03" },
+  { label: "2025 Liberation Day", date: "2025-04-02" },
+];
+
+const CORS_PROXIES = [
+  (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+  (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+];
+
+// ---------- Helpers ----------
+function fmtMoney(n, decimals = 2) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const sign = n < 0 ? "-" : "";
+  return `${sign}$${Math.abs(n).toLocaleString("en-US", {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })}`;
+}
+
+function fmtUnits(n) {
+  if (n === null || n === undefined || isNaN(n)) return "0.0000";
+  return n.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+}
+
+function fmtDate(d) {
+  const dt = typeof d === "string" ? new Date(d) : d;
+  return dt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function dayNumber(dateStr, epoch) {
+  const ms = new Date(dateStr).getTime() - epoch.getTime();
+  return Math.round(ms / 86400000);
+}
+
+async function fetchWithProxies(url) {
+  let lastErr;
+  for (const wrap of CORS_PROXIES) {
+    try {
+      const res = await fetch(wrap(url));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      if (!text || text.length < 10) throw new Error("Empty response");
+      return text;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("All proxies failed");
+}
+
+function parseStooqCSV(csv) {
+  const lines = csv.trim().split("\n");
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(",");
+    if (parts.length < 5) continue;
+    const [date, open, high, low, close] = parts;
+    const c = parseFloat(close);
+    if (date && !isNaN(c)) {
+      rows.push({ date, close: c });
+    }
+  }
+  return rows;
+}
+
+// ---------- Main Component ----------
+function CrashBuyingSimulator() {
+  const [priceHistory, setPriceHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [dataSource, setDataSource] = useState("");
+
+  const [transactions, setTransactions] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const [selectedDayIdx, setSelectedDayIdx] = useState(null);
+  const [action, setAction] = useState("BUY");
+  const [amount, setAmount] = useState(0);
+  const [activeTier, setActiveTier] = useState(15);
+  const [hoverIdx, setHoverIdx] = useState(null);
+
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const url = `https://stooq.com/q/d/l/?s=${TICKER.toLowerCase()}.us&i=d`;
+        const csv = await fetchWithProxies(url);
+        const rows = parseStooqCSV(csv).filter((r) => r.date >= "2016-01-01");
+        if (rows.length < 50) throw new Error("Insufficient data parsed");
+        if (!cancelled) {
+          setPriceHistory(rows);
+          setDataSource("live");
+          try {
+            localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify({ rows, ts: Date.now() }));
+          } catch (e) {}
+        }
+      } catch (e) {
+        try {
+          const cached = localStorage.getItem(PRICE_CACHE_KEY);
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            if (!cancelled) {
+              setPriceHistory(parsed.rows);
+              setDataSource("cached");
+              setLoadError(`Live fetch failed, showing cached data from ${new Date(parsed.ts).toLocaleDateString()}.`);
+            }
+          } else {
+            throw new Error("No cache available");
+          }
+        } catch (e2) {
+          if (!cancelled) {
+            setLoadError("Couldn't load live or cached QQQ data. Check your internet connection.");
+            setDataSource("none");
+          }
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  const persistTransactions = useCallback((next) => {
+    setTransactions(next);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch (e) {
+      console.error("Failed to persist transactions", e);
+    }
+  }, []);
+
+  const series = useMemo(() => {
+    if (!priceHistory.length) return [];
+    let peak = -Infinity;
+    return priceHistory.map((r) => {
+      peak = Math.max(peak, r.close);
+      const dd = (r.close - peak) / peak;
+      return { ...r, peak, drawdown: dd };
+    });
+  }, [priceHistory]);
+
+  const epoch = useMemo(() => (series.length ? new Date(series[0].date) : new Date()), [series]);
+
+  const latest = series.length ? series[series.length - 1] : null;
+  const peakToDate = series.length ? Math.max(...series.map((s) => s.close)) : 0;
+  const currentDrawdown = latest && peakToDate ? (latest.close - peakToDate) / peakToDate : 0;
+
+  const tierData = TIERS.map((t) => ({
+    ...t,
+    triggerPrice: peakToDate * (1 - t.drawdown / 100),
+    amount: STARTING_CASH * (t.pct / 100),
+  }));
+
+  const portfolio = useMemo(() => {
+    let cash = STARTING_CASH;
+    let units = 0;
+    for (const tx of transactions) {
+      if (tx.action === "BUY") {
+        cash -= tx.amount;
+        units += tx.units;
+      } else {
+        cash += tx.amount;
+        units -= tx.units;
+      }
+    }
+    const lastPrice = latest ? latest.close : 0;
+    const marketValue = units * lastPrice;
+    const totalEquity = cash + marketValue;
+    const pnl = totalEquity - STARTING_CASH;
+    const returnPct = (pnl / STARTING_CASH) * 100;
+    return { cash, units, marketValue, totalEquity, pnl, returnPct };
+  }, [transactions, latest]);
+
+  const selectedRow = selectedDayIdx !== null && series[selectedDayIdx] ? series[selectedDayIdx] : latest;
+  const previewPrice = selectedRow ? selectedRow.close : 0;
+  const previewUnits = previewPrice > 0 ? amount / previewPrice : 0;
+  const previewDayNum = selectedRow ? dayNumber(selectedRow.date, epoch) : 0;
+
+  let previewCashAfter = portfolio.cash;
+  let previewUnitsAfter = portfolio.units;
+  if (action === "BUY") {
+    previewCashAfter = portfolio.cash - amount;
+    previewUnitsAfter = portfolio.units + previewUnits;
+  } else {
+    previewCashAfter = portfolio.cash + amount;
+    previewUnitsAfter = portfolio.units - previewUnits;
+  }
+  const previewEquityAfter = previewCashAfter + previewUnitsAfter * previewPrice;
+
+  function handleSuggest() {
+    const tier = tierData.find((t) => t.drawdown === activeTier);
+    if (tier) setAmount(tier.amount);
+  }
+
+  function handleExecuteTrade() {
+    if (!selectedRow || amount <= 0) return;
+    const tx = {
+      id: Date.now(),
+      day: previewDayNum,
+      date: selectedRow.date,
+      price: previewPrice,
+      action,
+      units: previewUnits,
+      amount,
+      cashAfter: previewCashAfter,
+      unitsAfter: previewUnitsAfter,
+      equityAfter: previewEquityAfter,
+      notes: "",
+    };
+    persistTransactions([...transactions, tx]);
+    setAmount(0);
+  }
+
+  function handleDeleteTx(id) {
+    persistTransactions(transactions.filter((t) => t.id !== id));
+  }
+
+  function handleUseTier(drawdown) {
+    setActiveTier(drawdown);
+    const tier = tierData.find((t) => t.drawdown === drawdown);
+    if (tier) {
+      setAmount(tier.amount);
+      const idx = series.findIndex((s) => s.close <= tier.triggerPrice);
+      if (idx >= 0) setSelectedDayIdx(idx);
+      setAction("BUY");
+    }
+  }
+
+  const W = 1240;
+  const H = 240;
+  const padL = 60;
+  const padR = 20;
+  const padT = 20;
+  const padB = 24;
+
+  const chartGeo = useMemo(() => {
+    if (!series.length) return null;
+    const closes = series.map((s) => s.close);
+    const minC = Math.min(...closes) * 0.97;
+    const maxC = Math.max(...closes) * 1.03;
+    const n = series.length;
+    const x = (i) => padL + (i / (n - 1)) * (W - padL - padR);
+    const y = (v) => padT + (1 - (v - minC) / (maxC - minC)) * (H - padT - padB);
+    return { minC, maxC, x, y, n };
+  }, [series]);
+
+  const linePath = useMemo(() => {
+    if (!chartGeo) return "";
+    return series.map((s, i) => `${i === 0 ? "M" : "L"}${chartGeo.x(i).toFixed(2)},${chartGeo.y(s.close).toFixed(2)}`).join(" ");
+  }, [series, chartGeo]);
+
+  const drawdownBands = useMemo(() => {
+    if (!chartGeo) return [];
+    const bands = [];
+    let start = null;
+    for (let i = 0; i < series.length; i++) {
+      const inDD = series[i].drawdown <= -0.08;
+      if (inDD && start === null) start = i;
+      if (!inDD && start !== null) {
+        bands.push([start, i - 1]);
+        start = null;
+      }
+    }
+    if (start !== null) bands.push([start, series.length - 1]);
+    return bands;
+  }, [series, chartGeo]);
+
+  const yTicks = chartGeo ? [chartGeo.minC, (chartGeo.minC + chartGeo.maxC) / 2, chartGeo.maxC] : [];
+
+  const yearTicks = useMemo(() => {
+    if (!series.length) return [];
+    const ticks = [];
+    let lastYear = null;
+    for (let i = 0; i < series.length; i++) {
+      const yr = series[i].date.slice(0, 4);
+      if (yr !== lastYear) {
+        ticks.push({ idx: i, year: yr });
+        lastYear = yr;
+      }
+    }
+    return ticks;
+  }, [series]);
+
+  function handleChartClick(e) {
+    if (!chartGeo || !chartRef.current) return;
+    const rect = chartRef.current.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    const frac = (px - padL) / (W - padL - padR);
+    const idx = Math.round(frac * (chartGeo.n - 1));
+    if (idx >= 0 && idx < series.length) setSelectedDayIdx(idx);
+  }
+
+  function handleChartMove(e) {
+    if (!chartGeo || !chartRef.current) return;
+    const rect = chartRef.current.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    const frac = (px - padL) / (W - padL - padR);
+    const idx = Math.round(frac * (chartGeo.n - 1));
+    if (idx >= 0 && idx < series.length) setHoverIdx(idx);
+  }
+
+  const eventMarkers = useMemo(() => {
+    if (!chartGeo) return [];
+    return EVENTS.map((ev) => {
+      const idx = series.findIndex((s) => s.date >= ev.date);
+      if (idx < 0) return null;
+      return { ...ev, idx, x: chartGeo.x(idx) };
+    }).filter(Boolean);
+  }, [series, chartGeo]);
+
+  return (
+    <div style={styles.page}>
+      <div style={styles.header}>
+        <div>
+          <div style={styles.headerEyebrow}>LIVE SIMULATOR · {TICKER} (Nasdaq-100 proxy)</div>
+          <div style={styles.headerTitle}>Crash Buying Simulator</div>
+        </div>
+        <div style={styles.headerStatus}>
+          {loading ? (
+            <span style={{ ...styles.statusDot, background: "#f5a623", animation: "pulse 1.5s infinite" }} />
+          ) : dataSource === "live" ? (
+            <span style={{ ...styles.statusDot, background: "#22c55e" }} />
+          ) : (
+            <span style={{ ...styles.statusDot, background: "#ef4444" }} />
+          )}
+          <span style={styles.statusText}>
+            {loading ? "Loading market data…" : dataSource === "live" ? "Live data" : dataSource === "cached" ? "Cached data" : "No data"}
+          </span>
+        </div>
+      </div>
+
+      {loadError && <div style={styles.errorBanner}>{loadError}</div>}
+
+      <div style={styles.grid}>
+        <div style={styles.leftCol}>
+          <div style={styles.card}>
+            <div style={styles.cardLabel}>Peak To Date</div>
+            <div style={styles.peakValue}>{fmtMoney(peakToDate)}</div>
+            <div style={styles.ddBar}>
+              <div style={styles.ddBarFill(currentDrawdown)} />
+            </div>
+            <div style={styles.ddBarLabels}>
+              <span>-10%</span><span>-15%</span><span>-20%</span><span>-25%</span><span>-30%</span>
+            </div>
+            <div style={styles.eventRow}>
+              <span style={{ ...styles.eventPill, ...styles.eventPillActive }}>START</span>
+              {EVENTS.map((ev) => (
+                <span key={ev.label} style={styles.eventPill}>{ev.label}</span>
+              ))}
+            </div>
+          </div>
+
+          <div style={styles.card}>
+            <div style={styles.cardHeaderBar}>PORTFOLIO</div>
+            <div style={styles.cardBody}>
+              <Row label="Starting Cash" value={fmtMoney(STARTING_CASH, 0)} />
+              <Row label="Cash Balance" value={fmtMoney(portfolio.cash)} bold />
+              <Row label="Units Held" value={fmtUnits(portfolio.units)} bold />
+              <Row label="Market Value" value={fmtMoney(portfolio.marketValue)} bold />
+              <div style={styles.divider} />
+              <Row label="Total Equity" value={fmtMoney(portfolio.totalEquity)} highlight />
+              <Row label="P&L" value={fmtMoney(portfolio.pnl)} valueColor={portfolio.pnl >= 0 ? "#16a34a" : "#dc2626"} />
+              <Row
+                label="Return %"
+                value={`${portfolio.returnPct >= 0 ? "+" : ""}${portfolio.returnPct.toFixed(2)}%`}
+                valueColor={portfolio.returnPct >= 0 ? "#16a34a" : "#dc2626"}
+              />
+            </div>
+          </div>
+
+          <div style={styles.card}>
+            <div style={styles.cardHeaderBar}>
+              ALLOCATION GUIDE
+              <span style={styles.cardHeaderSub}>Crash-Buying Rule</span>
+            </div>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>DRAWDOWN</th>
+                  <th style={styles.th}>TRIGGER PRICE</th>
+                  <th style={styles.th}>% INVEST</th>
+                  <th style={styles.th}>AMOUNT</th>
+                  <th style={styles.th}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {tierData.map((t) => {
+                  const isActive = activeTier === t.drawdown;
+                  return (
+                    <tr key={t.drawdown} style={isActive ? styles.trActive : {}}>
+                      <td style={styles.td}>
+                        {isActive && <span style={styles.tierArrow}>▸</span>}
+                        -{t.drawdown}%
+                      </td>
+                      <td style={styles.td}>{fmtMoney(t.triggerPrice)}</td>
+                      <td style={styles.td}>{t.pct}%</td>
+                      <td style={styles.tdMono}>{fmtMoney(t.amount, 2)}</td>
+                      <td style={styles.td}>
+                        <button onClick={() => handleUseTier(t.drawdown)} style={isActive ? styles.useBtnActive : styles.useBtn}>
+                          Use
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                <tr>
+                  <td style={styles.td} colSpan={2}>Reserve</td>
+                  <td style={styles.td}>{(100 - TIERS.reduce((a, t) => a + t.pct, 0)).toFixed(0)}%</td>
+                  <td style={styles.tdMono}>{fmtMoney(STARTING_CASH - tierData.reduce((a, t) => a + t.amount, 0), 2)}</td>
+                  <td style={styles.td}></td>
+                </tr>
+                <tr style={styles.trTotal}>
+                  <td style={styles.tdBold}>Total</td>
+                  <td style={styles.td}></td>
+                  <td style={styles.tdBold}>100%</td>
+                  <td style={styles.tdMonoBold}>{fmtMoney(STARTING_CASH, 2)}</td>
+                  <td style={styles.td}></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style={styles.rightCol}>
+          <div style={styles.chartCard}>
+            {loading ? (
+              <div style={styles.chartLoading}>Fetching {TICKER} price history…</div>
+            ) : series.length ? (
+              <svg
+                ref={chartRef}
+                viewBox={`0 0 ${W} ${H}`}
+                style={styles.svg}
+                onClick={handleChartClick}
+                onMouseMove={handleChartMove}
+                onMouseLeave={() => setHoverIdx(null)}
+              >
+                {drawdownBands.map(([s, e], i) => (
+                  <rect key={i} x={chartGeo.x(s)} y={padT} width={Math.max(1, chartGeo.x(e) - chartGeo.x(s))} height={H - padT - padB} fill="#fca5a5" opacity={0.18} />
+                ))}
+                {yTicks.map((v, i) => (
+                  <g key={i}>
+                    <line x1={padL} x2={W - padR} y1={chartGeo.y(v)} y2={chartGeo.y(v)} stroke="#e5e7eb" strokeWidth="1" />
+                    <text x={padL - 8} y={chartGeo.y(v) + 4} textAnchor="end" style={styles.axisLabel}>{v.toFixed(0)}</text>
+                  </g>
+                ))}
+                {yearTicks.map((t, i) => (
+                  <text key={i} x={chartGeo.x(t.idx)} y={H - 6} textAnchor="middle" style={styles.axisLabel}>{t.year}</text>
+                ))}
+                <path d={linePath} fill="none" stroke="#1e3a8a" strokeWidth="1.4" />
+                {eventMarkers.map((ev) => (
+                  <line key={ev.label} x1={ev.x} x2={ev.x} y1={padT} y2={H - padB} stroke="#f59e0b" strokeWidth="1" strokeDasharray="3,3" />
+                ))}
+                {transactions.map((tx) => {
+                  const idx = series.findIndex((s) => s.date === tx.date);
+                  if (idx < 0) return null;
+                  return (
+                    <circle key={tx.id} cx={chartGeo.x(idx)} cy={chartGeo.y(series[idx].close)} r="4" fill={tx.action === "BUY" ? "#16a34a" : "#dc2626"} stroke="#fff" strokeWidth="1" />
+                  );
+                })}
+                {selectedDayIdx !== null && series[selectedDayIdx] && (
+                  <circle cx={chartGeo.x(selectedDayIdx)} cy={chartGeo.y(series[selectedDayIdx].close)} r="5" fill="#f59e0b" stroke="#1e293b" strokeWidth="1.5" />
+                )}
+                {hoverIdx !== null && series[hoverIdx] && (
+                  <line x1={chartGeo.x(hoverIdx)} x2={chartGeo.x(hoverIdx)} y1={padT} y2={H - padB} stroke="#94a3b8" strokeWidth="1" strokeDasharray="2,2" />
+                )}
+              </svg>
+            ) : (
+              <div style={styles.chartLoading}>{loadError || "No data available."}</div>
+            )}
+            {hoverIdx !== null && series[hoverIdx] && (
+              <div style={styles.chartTooltip}>
+                {fmtDate(series[hoverIdx].date)} · {fmtMoney(series[hoverIdx].close)} · DD {(series[hoverIdx].drawdown * 100).toFixed(1)}%
+              </div>
+            )}
+            <div style={styles.chartHint}>Click anywhere on the chart to select a trade date.</div>
+          </div>
+
+          <div style={styles.card}>
+            <div style={styles.cardHeaderBar}>TRADE INPUT</div>
+            <div style={styles.tradeInputGrid}>
+              <div>
+                <div style={styles.fieldLabel}>ACTION</div>
+                <div style={styles.actionToggle}>
+                  <button onClick={() => setAction("BUY")} style={action === "BUY" ? styles.buyBtnActive : styles.buyBtn}>BUY</button>
+                  <button onClick={() => setAction("SELL")} style={action === "SELL" ? styles.sellBtnActive : styles.sellBtn}>SELL</button>
+                </div>
+              </div>
+              <div>
+                <div style={styles.fieldLabel}>AMOUNT ($)</div>
+                <input type="number" value={amount} onChange={(e) => setAmount(parseFloat(e.target.value) || 0)} style={styles.input} />
+              </div>
+              <div>
+                <div style={styles.fieldLabel}>UNITS (AUTO)</div>
+                <input type="text" readOnly value={fmtUnits(previewUnits)} style={styles.inputReadonly} />
+              </div>
+              <div style={styles.tradeButtons}>
+                <button onClick={handleSuggest} style={styles.suggestBtn}>Suggest</button>
+                <button onClick={handleExecuteTrade} style={styles.executeBtn}>Execute Trade</button>
+              </div>
+            </div>
+
+            <div style={styles.previewBox}>
+              <div style={styles.previewHeader}><span>TRADE PREVIEW</span></div>
+              <div style={styles.previewGrid}>
+                <PreviewField label="DAY#" value={previewDayNum} />
+                <PreviewField label="DATE" value={selectedRow ? fmtDate(selectedRow.date) : "—"} />
+                <PreviewField label="PRICE" value={fmtMoney(previewPrice)} />
+                <PreviewField label="ACTION" value={action} color={action === "BUY" ? "#16a34a" : "#dc2626"} />
+                <PreviewField label="UNITS" value={fmtUnits(previewUnits)} />
+                <PreviewField label="AMOUNT" value={fmtMoney(amount)} />
+                <PreviewField label="CASH AFTER" value={fmtMoney(previewCashAfter)} />
+                <PreviewField label="UNITS AFTER" value={fmtUnits(previewUnitsAfter)} />
+                <PreviewField label="EQUITY AFTER" value={fmtMoney(previewEquityAfter)} bold />
+              </div>
+            </div>
+          </div>
+
+          <div style={styles.card}>
+            <div style={styles.cardHeaderBar}>
+              TRANSACTION LOG
+              <span style={styles.cardHeaderSub}>{transactions.length} trades logged</span>
+            </div>
+            {transactions.length === 0 ? (
+              <div style={styles.emptyState}>No trades yet. Select a date on the chart and execute a trade.</div>
+            ) : (
+              <table style={styles.txTable}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>#</th>
+                    <th style={styles.th}>DAY</th>
+                    <th style={styles.th}>DATE</th>
+                    <th style={styles.th}>PRICE</th>
+                    <th style={styles.th}>ACTION</th>
+                    <th style={styles.th}>UNITS</th>
+                    <th style={styles.th}>AMOUNT</th>
+                    <th style={styles.th}>CASH AFTER</th>
+                    <th style={styles.th}>UNITS AFTER</th>
+                    <th style={styles.th}>EQUITY AFTER</th>
+                    <th style={styles.th}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {transactions.map((tx, i) => (
+                    <tr key={tx.id}>
+                      <td style={styles.td}>{i + 1}</td>
+                      <td style={styles.td}>{tx.day}</td>
+                      <td style={styles.td}>{fmtDate(tx.date)}</td>
+                      <td style={styles.tdMono}>{fmtMoney(tx.price)}</td>
+                      <td style={styles.td}><span style={tx.action === "BUY" ? styles.buyTag : styles.sellTag}>{tx.action}</span></td>
+                      <td style={styles.tdMono}>{fmtUnits(tx.units)}</td>
+                      <td style={styles.tdMono}>{fmtMoney(tx.amount)}</td>
+                      <td style={styles.tdMono}>{fmtMoney(tx.cashAfter)}</td>
+                      <td style={styles.tdMono}>{fmtUnits(tx.unitsAfter)}</td>
+                      <td style={styles.tdMonoBold}>{fmtMoney(tx.equityAfter)}</td>
+                      <td style={styles.td}><button onClick={() => handleDeleteTx(tx.id)} style={styles.deleteBtn}>×</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value, bold, highlight, valueColor }) {
+  return (
+    <div style={{ ...styles.rowItem, ...(highlight ? styles.rowHighlight : {}) }}>
+      <span style={styles.rowLabel}>{label}</span>
+      <span style={{ ...styles.rowValue, ...(bold || highlight ? { fontWeight: 700 } : {}), ...(valueColor ? { color: valueColor } : {}) }}>{value}</span>
+    </div>
+  );
+}
+
+function PreviewField({ label, value, bold, color }) {
+  return (
+    <div style={styles.previewField}>
+      <div style={styles.previewFieldLabel}>{label}</div>
+      <div style={{ ...styles.previewFieldValue, ...(bold ? { fontWeight: 700 } : {}), ...(color ? { color } : {}) }}>{value}</div>
+    </div>
+  );
+}
+
+const NAVY = "#1e3a8a";
+const NAVY_DARK = "#162a5e";
+const BORDER = "#e2e8f0";
+const BG = "#f8f9fb";
+const MONO = "'JetBrains Mono', 'SF Mono', Menlo, monospace";
+const SANS = "'DM Sans', -apple-system, 'Segoe UI', sans-serif";
+
+const styles = {
+  page: { fontFamily: SANS, background: BG, minHeight: "100vh", padding: "20px 24px 60px", color: "#1e293b" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20 },
+  headerEyebrow: { fontFamily: MONO, fontSize: 11, letterSpacing: 1.2, color: "#64748b", marginBottom: 4 },
+  headerTitle: { fontSize: 26, fontWeight: 800, color: NAVY_DARK, letterSpacing: -0.5 },
+  headerStatus: { display: "flex", alignItems: "center", gap: 8 },
+  statusDot: { width: 8, height: 8, borderRadius: "50%", display: "inline-block" },
+  statusText: { fontFamily: MONO, fontSize: 12, color: "#64748b" },
+  errorBanner: { background: "#fef3c7", border: "1px solid #fbbf24", color: "#92400e", fontSize: 13, padding: "8px 14px", borderRadius: 6, marginBottom: 16, fontFamily: MONO },
+  grid: { display: "grid", gridTemplateColumns: "380px 1fr", gap: 16, alignItems: "start" },
+  leftCol: { display: "flex", flexDirection: "column", gap: 16 },
+  rightCol: { display: "flex", flexDirection: "column", gap: 16 },
+  card: { background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden" },
+  cardLabel: { fontFamily: MONO, fontSize: 11, letterSpacing: 1, color: "#64748b", padding: "14px 16px 0" },
+  peakValue: { fontFamily: MONO, fontSize: 24, fontWeight: 700, padding: "4px 16px 12px", color: NAVY_DARK },
+  ddBar: { height: 6, margin: "0 16px", borderRadius: 3, background: "linear-gradient(90deg, #1e3a8a 0%, #fbbf24 50%, #dc2626 100%)", position: "relative" },
+  ddBarFill: (dd) => ({ position: "absolute", top: -3, left: `${Math.min(100, Math.max(0, (Math.abs(dd) / 0.3) * 100))}%`, width: 2, height: 12, background: "#1e293b" }),
+  ddBarLabels: { display: "flex", justifyContent: "space-between", fontFamily: MONO, fontSize: 9, color: "#94a3b8", padding: "4px 16px 12px" },
+  eventRow: { display: "flex", flexWrap: "wrap", gap: 6, padding: "0 16px 16px" },
+  eventPill: { fontFamily: MONO, fontSize: 10, padding: "4px 10px", borderRadius: 12, background: "#f1f5f9", color: "#475569", border: `1px solid ${BORDER}` },
+  eventPillActive: { background: NAVY, color: "#fff", border: `1px solid ${NAVY}`, fontWeight: 700 },
+  cardHeaderBar: { background: NAVY, color: "#fff", fontFamily: MONO, fontSize: 12, fontWeight: 700, letterSpacing: 0.8, padding: "10px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" },
+  cardHeaderSub: { fontWeight: 400, fontSize: 10, color: "#c7d2fe", textTransform: "none", letterSpacing: 0 },
+  cardBody: { padding: "8px 16px 16px" },
+  rowItem: { display: "flex", justifyContent: "space-between", padding: "8px 0", fontSize: 13 },
+  rowHighlight: { background: "#fffbeb", margin: "0 -16px", padding: "10px 16px" },
+  rowLabel: { color: "#64748b" },
+  rowValue: { fontFamily: MONO, color: "#1e293b" },
+  divider: { borderTop: `1px solid ${BORDER}`, margin: "4px 0" },
+  table: { width: "100%", borderCollapse: "collapse", fontSize: 12 },
+  txTable: { width: "100%", borderCollapse: "collapse", fontSize: 12 },
+  th: { textAlign: "left", padding: "8px 10px", fontFamily: MONO, fontSize: 10, color: "#94a3b8", borderBottom: `1px solid ${BORDER}`, whiteSpace: "nowrap" },
+  td: { padding: "8px 10px", borderBottom: `1px solid #f1f5f9`, color: "#334155", whiteSpace: "nowrap" },
+  tdMono: { padding: "8px 10px", borderBottom: `1px solid #f1f5f9`, fontFamily: MONO, color: "#334155", whiteSpace: "nowrap" },
+  tdBold: { padding: "8px 10px", borderBottom: `1px solid #f1f5f9`, fontWeight: 700, color: "#1e293b" },
+  tdMonoBold: { padding: "8px 10px", borderBottom: `1px solid #f1f5f9`, fontFamily: MONO, fontWeight: 700, color: "#1e293b", whiteSpace: "nowrap" },
+  trActive: { background: "#fffbeb" },
+  trTotal: { background: "#f8fafc" },
+  tierArrow: { color: "#f59e0b", marginRight: 4 },
+  useBtn: { fontFamily: MONO, fontSize: 10, padding: "4px 10px", border: `1px solid ${BORDER}`, background: "#f8fafc", color: "#64748b", borderRadius: 4, cursor: "pointer" },
+  useBtnActive: { fontFamily: MONO, fontSize: 10, padding: "4px 10px", border: `1px solid ${NAVY}`, background: NAVY, color: "#fff", borderRadius: 4, cursor: "pointer", fontWeight: 700 },
+  chartCard: { background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 12px 8px", position: "relative" },
+  svg: { width: "100%", height: 240, display: "block", cursor: "crosshair" },
+  chartLoading: { height: 240, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: MONO, fontSize: 13, color: "#94a3b8" },
+  axisLabel: { fontFamily: MONO, fontSize: 9, fill: "#94a3b8" },
+  chartTooltip: { position: "absolute", top: 8, right: 16, fontFamily: MONO, fontSize: 11, background: "#1e293b", color: "#fff", padding: "4px 10px", borderRadius: 4 },
+  chartHint: { fontFamily: MONO, fontSize: 10, color: "#94a3b8", textAlign: "center", paddingTop: 6 },
+  tradeInputGrid: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1.4fr", gap: 14, padding: "16px", alignItems: "end" },
+  fieldLabel: { fontFamily: MONO, fontSize: 10, letterSpacing: 0.8, color: "#94a3b8", marginBottom: 6 },
+  actionToggle: { display: "flex", border: `1px solid ${BORDER}`, borderRadius: 6, overflow: "hidden" },
+  buyBtn: { flex: 1, padding: "10px 0", border: "none", background: "#fff", color: "#16a34a", fontFamily: MONO, fontWeight: 700, fontSize: 12, cursor: "pointer" },
+  buyBtnActive: { flex: 1, padding: "10px 0", border: "none", background: "#16a34a", color: "#fff", fontFamily: MONO, fontWeight: 700, fontSize: 12, cursor: "pointer" },
+  sellBtn: { flex: 1, padding: "10px 0", border: "none", background: "#fff", color: "#dc2626", fontFamily: MONO, fontWeight: 700, fontSize: 12, cursor: "pointer" },
+  sellBtnActive: { flex: 1, padding: "10px 0", border: "none", background: "#dc2626", color: "#fff", fontFamily: MONO, fontWeight: 700, fontSize: 12, cursor: "pointer" },
+  input: { width: "100%", padding: "10px 12px", border: `1px solid ${BORDER}`, borderRadius: 6, fontFamily: MONO, fontSize: 13, color: "#1e293b" },
+  inputReadonly: { width: "100%", padding: "10px 12px", border: `1px solid ${BORDER}`, borderRadius: 6, fontFamily: MONO, fontSize: 13, color: "#64748b", background: "#f8fafc" },
+  tradeButtons: { display: "flex", gap: 8 },
+  suggestBtn: { flex: 1, padding: "10px 0", border: `1px solid ${BORDER}`, background: "#fff", color: "#334155", borderRadius: 6, fontFamily: MONO, fontSize: 12, fontWeight: 700, cursor: "pointer" },
+  executeBtn: { flex: 1.4, padding: "10px 0", border: "none", background: NAVY, color: "#fff", borderRadius: 6, fontFamily: MONO, fontSize: 12, fontWeight: 700, cursor: "pointer" },
+  previewBox: { margin: "0 16px 16px", border: `1px dashed ${BORDER}`, borderRadius: 6, background: "#fafbfc" },
+  previewHeader: { fontFamily: MONO, fontSize: 10, color: "#94a3b8", padding: "8px 12px 0", letterSpacing: 0.8 },
+  previewGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px 16px", padding: "10px 12px 14px" },
+  previewField: {},
+  previewFieldLabel: { fontFamily: MONO, fontSize: 9, color: "#94a3b8", marginBottom: 2 },
+  previewFieldValue: { fontFamily: MONO, fontSize: 13, color: "#1e293b" },
+  emptyState: { padding: "30px 16px", textAlign: "center", fontFamily: MONO, fontSize: 12, color: "#94a3b8" },
+  buyTag: { fontFamily: MONO, fontSize: 10, fontWeight: 700, color: "#16a34a", background: "#dcfce7", padding: "2px 8px", borderRadius: 4 },
+  sellTag: { fontFamily: MONO, fontSize: 10, fontWeight: 700, color: "#dc2626", background: "#fee2e2", padding: "2px 8px", borderRadius: 4 },
+  deleteBtn: { border: "none", background: "none", color: "#94a3b8", fontSize: 16, cursor: "pointer", lineHeight: 1 },
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<CrashBuyingSimulator />);
+</script>
+</body>
+</html>
