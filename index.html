@@ -36,8 +36,9 @@ const {useState,useEffect,useCallback,useMemo,useRef} = React;
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const TICKERS = [
-  // SPX uses Finnhub monthly candles chunked across years — real index data, not proxy
-  { id:"SPX",  label:"SPX",  fullName:"S&P 500 Index",          avSym:null,   fhSym:"^GSPC", useFinHubHistory:true  },
+  // SPX: try Finnhub OANDA:SPX500_USD (CFD proxy, free tier candles work)
+  // ETFs: AV weekly (Finnhub history not used — avoids rate limit hammering)
+  { id:"SPX",  label:"SPX",  fullName:"S&P 500 Index",          avSym:null,   fhSym:"OANDA:SPX500_USD", useFinHubHistory:true  },
   { id:"SPY",  label:"SPY",  fullName:"SPDR S&P 500 ETF",       avSym:"SPY",  fhSym:"SPY"   },
   { id:"QQQ",  label:"QQQ",  fullName:"Invesco Nasdaq-100 ETF",  avSym:"QQQ",  fhSym:"QQQ"   },
   { id:"VOO",  label:"VOO",  fullName:"Vanguard S&P 500 ETF",    avSym:"VOO",  fhSym:"VOO"   },
@@ -63,7 +64,7 @@ const EVENTS = [
 // ─── Key storage ──────────────────────────────────────────────────────────────
 const AV_KEY  = "cbs_av_key_v1";
 const FH_KEY  = "cbs_fh_key_v1";
-const CACHE_V = "cbs_v8";
+const CACHE_V = "cbs_v9"; // v9: OANDA SPX, 2yr blocks, AV fallback
 const getKey  = k=>{ try{return localStorage.getItem(k)||"";}catch(e){return "";} };
 const saveKey = (k,v)=>{ try{localStorage.setItem(k,v.trim());}catch(e){} };
 
@@ -94,22 +95,47 @@ async function fetchAV(avSym,apiKey){
   return rows;
 }
 
-// ─── Finnhub historical (monthly candles, chunked by year) ───────────────────
+// ─── Finnhub historical (weekly candles for SPX, chunked 2-year blocks) ──────
 async function fetchFHHistory(fhSym,fhKey){
-  // Fetch monthly candles year by year from 2016 to now
-  // Each call: 1 API request. 10 years = 10 calls. Free tier: 60/min — fine.
-  const now = Math.floor(Date.now()/1000);
+  // Use 2-year blocks to reduce number of calls (5 calls for 10 years vs 10)
+  // 1s delay between calls to stay well within 60/min free tier
+  const now       = Math.floor(Date.now()/1000);
   const startYear = 2016;
   const endYear   = new Date().getFullYear();
   const allRows   = [];
 
-  for(let yr=startYear; yr<=endYear; yr++){
+  // Try primary symbol, then fallbacks for SPX
+  const symbolsToTry = fhSym==="OANDA:SPX500_USD"
+    ? ["OANDA:SPX500_USD","FOREX:SPX500","SPY"] // fallback chain for S&P 500
+    : [fhSym];
+
+  let workingSym = null;
+  for(const sym of symbolsToTry){
+    // Quick probe: fetch just the last month to see if symbol works
+    const testFrom = now - 30*24*3600;
+    const testUrl  = `https://finnhub.io/api/v1/stock/candle?symbol=${sym}&resolution=W&from=${testFrom}&to=${now}&token=${fhKey}`;
+    try{
+      const r=await fetch(testUrl,{signal:AbortSignal.timeout(10000)});
+      if(!r.ok) continue;
+      const j=await r.json();
+      if(j.s==="ok"&&j.t&&j.t.length>0){workingSym=sym;break;}
+    }catch(e){}
+    await new Promise(res=>setTimeout(res,700));
+  }
+
+  if(!workingSym) throw new Error("No working Finnhub symbol found for SPX — using SPY proxy instead");
+
+  // Fetch in 2-year blocks
+  for(let yr=startYear; yr<=endYear; yr+=2){
     const from = toUnix(`${yr}-01-01`);
-    const to   = yr===endYear ? now : toUnix(`${yr}-12-31`);
-    const url  = `https://finnhub.io/api/v1/stock/candle?symbol=${fhSym}&resolution=W&from=${from}&to=${to}&token=${fhKey}`;
+    const to   = Math.min(now, toUnix(`${Math.min(yr+1,endYear)}-12-31`));
+    const url  = `https://finnhub.io/api/v1/stock/candle?symbol=${workingSym}&resolution=W&from=${from}&to=${to}&token=${fhKey}`;
     try{
       const r=await fetch(url,{signal:AbortSignal.timeout(15000)});
-      if(!r.ok) throw new Error(`FH HTTP ${r.status}`);
+      if(!r.ok){
+        if(r.status===429) await new Promise(res=>setTimeout(res,5000)); // back off on rate limit
+        continue;
+      }
       const json=await r.json();
       if(json.s!=="ok"||!json.t) continue;
       for(let i=0;i<json.t.length;i++){
@@ -117,14 +143,17 @@ async function fetchFHHistory(fhSym,fhKey){
         allRows.push({date:d,close:json.c[i]});
       }
     }catch(e){
-      console.warn(`[CBS] FH ${fhSym} ${yr}:`,e.message);
+      console.warn(`[CBS] FH ${workingSym} ${yr}-${yr+1}:`,e.message);
     }
-    // Small delay to respect rate limit
-    if(yr<endYear) await new Promise(res=>setTimeout(res,200));
+    if(yr+2<=endYear) await new Promise(res=>setTimeout(res,1000)); // 1s between calls
   }
 
-  if(allRows.length<50) throw new Error(`FH: too few rows (${allRows.length}) for ${fhSym}`);
-  // Deduplicate and sort
+  if(allRows.length<50){
+    // Last resort: fall back to SPY data as SPX proxy
+    console.warn("[CBS] Finnhub SPX failed, falling back to SPY via AV");
+    throw new Error("SPX via Finnhub unavailable — will use SPY as proxy");
+  }
+
   const seen=new Set();
   return allRows.filter(r=>{
     if(seen.has(r.date)) return false;
@@ -157,12 +186,22 @@ function toCache(id,rows){
 
 // ─── Live fetch dispatcher ────────────────────────────────────────────────────
 async function fetchLive(ticker,avKey,fhKey){
-  // SPX: use Finnhub weekly candles (real index data)
+  // SPX: try Finnhub first, fall back to AV with SPY as proxy
   if(ticker.useFinHubHistory){
-    if(!fhKey||fhKey.length<5) throw new Error("Finnhub key needed for SPX history");
-    const rows=await fetchFHHistory(ticker.fhSym,fhKey);
+    if(fhKey&&fhKey.length>5){
+      try{
+        const rows=await fetchFHHistory(ticker.fhSym,fhKey);
+        toCache(ticker.id,rows);
+        return {rows,source:"live",sourceLabel:"Finnhub (SPX)"};
+      }catch(e){
+        console.warn("[CBS] SPX Finnhub failed:",e.message,"— falling back to SPY via AV");
+      }
+    }
+    // Fallback: use SPY from AV as SPX proxy
+    if(!avKey||avKey.length<5) throw new Error("Need Alpha Vantage key for SPX fallback");
+    const rows=await fetchAV("SPY",avKey);
     toCache(ticker.id,rows);
-    return {rows,source:"live",sourceLabel:"Finnhub"};
+    return {rows,source:"live",sourceLabel:"AV/SPY proxy",isProxy:true};
   }
   // ETFs: use Alpha Vantage weekly
   if(!avKey||avKey.length<5) throw new Error("Alpha Vantage key needed");
@@ -394,7 +433,7 @@ function TickerSim({ticker,priceData,fhKey}){
            :<span style={{...S.dot,background:"#ef4444"}}/>}
           <span style={S.statusTxt}>
             {loading?(priceData.source==="waiting"?"Retrying…":"Fetching…")
-             :priceData.source==="live"?`Live · ${priceData.sourceLabel||""} · ${priceData.rows.length} pts`
+             :priceData.source==="live"?`Live · ${priceData.sourceLabel||""} · ${priceData.rows.length} pts${priceData.isProxy?" (SPY proxy)":""}`
              :priceData.source==="cached"?`Cached · ${priceData.cacheDate}`
              :priceData.source==="nokey"?"Enter API key(s)":"Error"}
           </span>
