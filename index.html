@@ -67,6 +67,17 @@ const CACHE_V = "cbs_v12"; // v12: SPX real index via ^spx/^GSPC, YF live quote
 const getKey  = k=>{ try{return localStorage.getItem(k)||"";}catch(e){return "";} };
 const saveKey = (k,v)=>{ try{localStorage.setItem(k,v.trim());}catch(e){} };
 
+// Purge any old price cache keys that don't match current version
+// This ensures stale SPY-priced data never contaminates SPX tab
+(function purgeOldCache(){
+  try{
+    const keep=new Set([FH_KEY,...["SPX","SPY","QQQ","VOO","URTH"].map(id=>`${CACHE_V}_${id}`)]);
+    Object.keys(localStorage)
+      .filter(k=>k.startsWith("cbs_")&&!keep.has(k))
+      .forEach(k=>localStorage.removeItem(k));
+  }catch(e){}
+})();
+
 // ─── CORS Proxy chain (same as working existing simulator) ────────────────────
 const PROXIES = [
   u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,
@@ -289,10 +300,13 @@ function TickerSim({ticker,priceData,fhKey}){
 
   const epoch      =useMemo(()=>series.length?new Date(series[0].date):new Date(),[series]);
   const latest     =series.length?series[series.length-1]:null;
-  const peakToDate =series.length?Math.max(...series.map(s=>s.close)):0;
+  const histPeak   =series.length?Math.max(...series.map(s=>s.close)):0;
 
-  // Use live quote price if available, otherwise use last weekly close
+  // Use live quote price if available, otherwise use last close
   const currentPrice = liveQuote?.price || (latest?.close||0);
+
+  // Peak = max of historical peak OR live price (handles case where live > cached history)
+  const peakToDate   = Math.max(histPeak, currentPrice);
   const curDD        = peakToDate>0 ? (currentPrice-peakToDate)/peakToDate : 0;
   const curDDPct     = Math.abs(curDD)*100;
 
