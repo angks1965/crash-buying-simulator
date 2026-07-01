@@ -37,290 +37,312 @@ window.addEventListener('error', function(e) {
 <script type="text/babel">
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
-// ─── Config ──────────────────────────────────────────────────────────────────
-const STARTING_CASH = 200000;
-
+// ─── Config ───────────────────────────────────────────────────────────────────
 const TICKERS = [
-  { id: "SPX",  label: "SPX",  fullName: "S&P 500 Index",           yahooSym: "%5EGSPC", stooqSym: "^spx"   },
-  { id: "SPY",  label: "SPY",  fullName: "SPDR S&P 500 ETF",        yahooSym: "SPY",     stooqSym: "spy.us"  },
-  { id: "QQQ",  label: "QQQ",  fullName: "Invesco Nasdaq-100 ETF",   yahooSym: "QQQ",     stooqSym: "qqq.us"  },
-  { id: "VOO",  label: "VOO",  fullName: "Vanguard S&P 500 ETF",     yahooSym: "VOO",     stooqSym: "voo.us"  },
-  { id: "URTH", label: "URTH", fullName: "iShares MSCI World ETF",   yahooSym: "URTH",    stooqSym: "urth.us" },
+  { id:"SPX",  label:"SPX",  fullName:"S&P 500 Index",          yahooSym:"%5EGSPC", stooqSym:"^spx"    },
+  { id:"SPY",  label:"SPY",  fullName:"SPDR S&P 500 ETF",       yahooSym:"SPY",     stooqSym:"spy.us"  },
+  { id:"QQQ",  label:"QQQ",  fullName:"Invesco Nasdaq-100 ETF",  yahooSym:"QQQ",     stooqSym:"qqq.us"  },
+  { id:"VOO",  label:"VOO",  fullName:"Vanguard S&P 500 ETF",    yahooSym:"VOO",     stooqSym:"voo.us"  },
+  { id:"URTH", label:"URTH", fullName:"iShares MSCI World ETF",  yahooSym:"URTH",    stooqSym:"urth.us" },
 ];
 
 const TIERS = [
-  { drawdown: 10, pct: 10 },
-  { drawdown: 15, pct: 15 },
-  { drawdown: 20, pct: 20 },
-  { drawdown: 25, pct: 25 },
-  { drawdown: 30, pct: 30 },
+  { drawdown:10, pct:10 },
+  { drawdown:15, pct:15 },
+  { drawdown:20, pct:20 },
+  { drawdown:25, pct:25 },
+  { drawdown:30, pct:30 },
 ];
 
+// FIX 1: Events now carry dates so clicking them jumps the chart
 const EVENTS = [
-  { label: "2018 Trade War",      date: "2018-10-01" },
-  { label: "2020 Covid",          date: "2020-02-20" },
-  { label: "2022 Inflation",      date: "2022-01-03" },
-  { label: "2025 Liberation Day", date: "2025-04-02" },
+  { label:"START",              date:null           },
+  { label:"2018 Trade War",     date:"2018-10-01"   },
+  { label:"2020 Covid",         date:"2020-02-20"   },
+  { label:"2022 Inflation",     date:"2022-01-03"   },
+  { label:"2025 Liberation Day",date:"2025-04-02"   },
 ];
 
 const CORS_PROXIES = [
-  u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
-  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+  u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
 ];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-const fmt$ = (n, d=2) => {
-  if (n==null||isNaN(n)) return "—";
-  const s = n<0?"-":"";
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const fmt$ = (n,d=2)=>{
+  if(n==null||isNaN(n)) return "—";
+  const s=n<0?"-":"";
   return `${s}$${Math.abs(n).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d})}`;
 };
-const fmtU  = n => (n==null||isNaN(n)) ? "0.0000" : n.toLocaleString("en-US",{minimumFractionDigits:4,maximumFractionDigits:4});
-const fmtDt = d => { const dt=typeof d==="string"?new Date(d):d; return dt.toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}); };
-const dayN  = (ds,ep) => Math.round((new Date(ds)-ep)/86400000);
+const fmtU  = n=>(n==null||isNaN(n))?"0.0000":n.toLocaleString("en-US",{minimumFractionDigits:4,maximumFractionDigits:4});
+const fmtDt = d=>{ const dt=typeof d==="string"?new Date(d):d; return dt.toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}); };
+const dayN  = (ds,ep)=>Math.round((new Date(ds)-ep)/86400000);
 
-async function fetchProxy(url) {
+async function fetchProxy(url){
   let last;
-  for (const wrap of CORS_PROXIES) {
-    try {
-      const r = await fetch(wrap(url), {signal: AbortSignal.timeout(8000)});
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const t = await r.text();
-      if (!t||t.length<20) throw new Error("empty");
+  for(const wrap of CORS_PROXIES){
+    try{
+      const r=await fetch(wrap(url),{signal:AbortSignal.timeout(8000)});
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const t=await r.text();
+      if(!t||t.length<20) throw new Error("empty");
       return t;
-    } catch(e) { last=e; }
+    }catch(e){last=e;}
   }
   throw last||new Error("all proxies failed");
 }
 
-function parseStooq(csv) {
+function parseStooq(csv){
   const rows=[];
-  for (const line of csv.trim().split("\n").slice(1)) {
+  for(const line of csv.trim().split("\n").slice(1)){
     const p=line.split(",");
-    if (p.length<5) continue;
+    if(p.length<5) continue;
     const c=parseFloat(p[4]);
-    if (p[0]&&!isNaN(c)) rows.push({date:p[0],close:c});
+    if(p[0]&&!isNaN(c)) rows.push({date:p[0],close:c});
   }
   return rows;
 }
 
-async function fetchYahoo(yahooSym) {
-  // Yahoo Finance v8 chart API — no key needed, works from HTTPS origins via proxy
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSym}?interval=1d&range=10y`;
-  const text = await fetchProxy(url);
-  const json = JSON.parse(text);
-  const ts    = json.chart.result[0].timestamp;
-  const close = json.chart.result[0].indicators.quote[0].close;
-  const rows  = [];
-  for (let i=0;i<ts.length;i++) {
-    if (close[i]==null) continue;
-    const d = new Date(ts[i]*1000);
-    rows.push({ date: d.toISOString().slice(0,10), close: close[i] });
+async function fetchYahoo(sym){
+  const url=`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=10y`;
+  const text=await fetchProxy(url);
+  const json=JSON.parse(text);
+  const ts=json.chart.result[0].timestamp;
+  const close=json.chart.result[0].indicators.quote[0].close;
+  const rows=[];
+  for(let i=0;i<ts.length;i++){
+    if(close[i]==null) continue;
+    const d=new Date(ts[i]*1000);
+    rows.push({date:d.toISOString().slice(0,10),close:close[i]});
   }
   return rows.filter(r=>r.date>="2016-01-01");
 }
 
-async function fetchStooq(stooqSym) {
-  const url = `https://stooq.com/q/d/l/?s=${stooqSym}&i=d`;
-  const text = await fetchProxy(url);
+async function fetchStooq(sym){
+  const url=`https://stooq.com/q/d/l/?s=${sym}&i=d`;
+  const text=await fetchProxy(url);
   return parseStooq(text).filter(r=>r.date>="2016-01-01");
 }
 
-async function loadPrices(ticker) {
-  const cacheKey = `cbs_prices_v2_${ticker.id}`;
-  // Try Yahoo first, then Stooq
-  for (const attempt of [
-    () => fetchYahoo(ticker.yahooSym),
-    () => fetchStooq(ticker.stooqSym),
-  ]) {
-    try {
-      const rows = await attempt();
-      if (rows.length < 50) throw new Error("too few rows");
-      try { localStorage.setItem(cacheKey, JSON.stringify({rows,ts:Date.now()})); } catch(e){}
-      return { rows, source: "live" };
-    } catch(e) {}
+async function loadPrices(ticker){
+  const cacheKey=`cbs_prices_v2_${ticker.id}`;
+  for(const attempt of [
+    ()=>fetchYahoo(ticker.yahooSym),
+    ()=>fetchStooq(ticker.stooqSym),
+  ]){
+    try{
+      const rows=await attempt();
+      if(rows.length<50) throw new Error("too few rows");
+      try{localStorage.setItem(cacheKey,JSON.stringify({rows,ts:Date.now()}));}catch(e){}
+      return {rows,source:"live"};
+    }catch(e){}
   }
-  // Fallback: localStorage cache
-  try {
-    const c = localStorage.getItem(cacheKey);
-    if (c) {
-      const {rows,ts} = JSON.parse(c);
-      return { rows, source: "cached", cacheDate: new Date(ts).toLocaleDateString() };
-    }
-  } catch(e) {}
-  return { rows: [], source: "none" };
+  try{
+    const c=localStorage.getItem(cacheKey);
+    if(c){const{rows,ts}=JSON.parse(c);return{rows,source:"cached",cacheDate:new Date(ts).toLocaleDateString()};}
+  }catch(e){}
+  return {rows:[],source:"none"};
 }
 
-// ─── Per-ticker simulator ──────────────────────────────────────────────────
-function TickerSim({ ticker }) {
-  const [priceData, setPriceData] = useState({ rows:[], source:"" });
+// ─── Per-ticker Simulator ────────────────────────────────────────────────────
+function TickerSim({ticker}){
+  const [priceData, setPriceData] = useState({rows:[],source:""});
   const [loading,   setLoading]   = useState(true);
   const [loadMsg,   setLoadMsg]   = useState("");
 
-  const txKey = `cbs_tx_v2_${ticker.id}`;
-  const [transactions, setTransactions] = useState(() => {
-    try { const s=localStorage.getItem(txKey); return s?JSON.parse(s):[]; } catch(e){return [];}
+  const txKey   = `cbs_tx_v2_${ticker.id}`;
+  const cashKey = `cbs_cash_v2_${ticker.id}`;
+
+  const [transactions, setTransactions] = useState(()=>{
+    try{const s=localStorage.getItem(txKey);return s?JSON.parse(s):[];}catch(e){return [];}
   });
 
-  const [selIdx,     setSelIdx]     = useState(null);
-  const [action,     setAction]     = useState("BUY");
-  const [amount,     setAmount]     = useState(0);
-  const [activeTier, setActiveTier] = useState(15);
-  const [hoverIdx,   setHoverIdx]   = useState(null);
+  // FIX 2: Starting Cash is user-editable, persisted per ticker
+  const [startingCash, setStartingCash] = useState(()=>{
+    try{const s=localStorage.getItem(cashKey);return s?parseFloat(s):200000;}catch(e){return 200000;}
+  });
+  const [editingCash,  setEditingCash]  = useState(false);
+  const [cashDraft,    setCashDraft]    = useState("");
+
+  const [selIdx,      setSelIdx]      = useState(null);
+  const [action,      setAction]      = useState("BUY");
+  const [amount,      setAmount]      = useState(0);
+  const [activeTier,  setActiveTier]  = useState(null);  // FIX 3: null = no arrow until user clicks
+  const [activeEvent, setActiveEvent] = useState("START");
+  const [hoverIdx,    setHoverIdx]    = useState(null);
   const chartRef = useRef(null);
 
-  useEffect(() => {
+  useEffect(()=>{
     let cancelled=false;
     setLoading(true); setLoadMsg("");
-    loadPrices(ticker).then(result => {
-      if (cancelled) return;
+    loadPrices(ticker).then(result=>{
+      if(cancelled) return;
       setPriceData(result);
       setLoading(false);
-      if (result.source==="cached") setLoadMsg(`Live fetch failed — showing cached data (${result.cacheDate})`);
-      else if (result.source==="none") setLoadMsg("Couldn't load price data. Try refreshing.");
+      if(result.source==="cached") setLoadMsg(`Live fetch failed — showing cached data (${result.cacheDate})`);
+      else if(result.source==="none") setLoadMsg("Couldn't load price data. Try refreshing.");
     });
-    return () => { cancelled=true; };
-  }, [ticker.id]);
+    return()=>{cancelled=true;};
+  },[ticker.id]);
 
-  const persistTx = useCallback(next => {
+  const persistTx = useCallback(next=>{
     setTransactions(next);
-    try { localStorage.setItem(txKey, JSON.stringify(next)); } catch(e){}
-  }, [txKey]);
+    try{localStorage.setItem(txKey,JSON.stringify(next));}catch(e){}
+  },[txKey]);
 
-  // Derived series with running peak + drawdown
-  const series = useMemo(() => {
-    if (!priceData.rows.length) return [];
+  function saveCash(val){
+    const n=parseFloat(val);
+    if(isNaN(n)||n<=0) return;
+    setStartingCash(n);
+    try{localStorage.setItem(cashKey,String(n));}catch(e){}
+  }
+
+  // Series with running peak + drawdown
+  const series = useMemo(()=>{
+    if(!priceData.rows.length) return [];
     let peak=-Infinity;
-    return priceData.rows.map(r => {
-      peak = Math.max(peak, r.close);
-      return {...r, peak, drawdown:(r.close-peak)/peak};
+    return priceData.rows.map(r=>{
+      peak=Math.max(peak,r.close);
+      return{...r,peak,drawdown:(r.close-peak)/peak};
     });
-  }, [priceData.rows]);
+  },[priceData.rows]);
 
-  const epoch      = useMemo(()=> series.length ? new Date(series[0].date) : new Date(), [series]);
-  const latest     = series.length ? series[series.length-1] : null;
-  const peakToDate = series.length ? Math.max(...series.map(s=>s.close)) : 0;
-  const curDD      = latest && peakToDate ? (latest.close-peakToDate)/peakToDate : 0;
+  const epoch      = useMemo(()=>series.length?new Date(series[0].date):new Date(),[series]);
+  const latest     = series.length?series[series.length-1]:null;
+  const peakToDate = series.length?Math.max(...series.map(s=>s.close)):0;
+  const curDD      = latest&&peakToDate?(latest.close-peakToDate)/peakToDate:0;
 
   const tierData = TIERS.map(t=>({
     ...t,
-    triggerPrice: peakToDate*(1-t.drawdown/100),
-    amount: STARTING_CASH*(t.pct/100),
+    triggerPrice:peakToDate*(1-t.drawdown/100),
+    amount:startingCash*(t.pct/100),
   }));
 
   const portfolio = useMemo(()=>{
-    let cash=STARTING_CASH, units=0;
-    for (const tx of transactions) {
-      if (tx.action==="BUY") { cash-=tx.amount; units+=tx.units; }
-      else                   { cash+=tx.amount; units-=tx.units; }
+    let cash=startingCash, units=0;
+    for(const tx of transactions){
+      if(tx.action==="BUY"){cash-=tx.amount;units+=tx.units;}
+      else{cash+=tx.amount;units-=tx.units;}
     }
-    const lastPrice = latest?latest.close:0;
-    const mktVal    = units*lastPrice;
-    const equity    = cash+mktVal;
-    const pnl       = equity-STARTING_CASH;
-    return { cash, units, mktVal, equity, pnl, ret:(pnl/STARTING_CASH)*100 };
-  }, [transactions, latest]);
+    const lastPrice=latest?latest.close:0;
+    const mktVal=units*lastPrice;
+    const equity=cash+mktVal;
+    const pnl=equity-startingCash;
+    return{cash,units,mktVal,equity,pnl,ret:(pnl/startingCash)*100};
+  },[transactions,latest,startingCash]);
 
   // Trade preview
-  const selRow     = selIdx!==null&&series[selIdx] ? series[selIdx] : latest;
-  const prevPrice  = selRow?selRow.close:0;
-  const prevUnits  = prevPrice>0 ? amount/prevPrice : 0;
-  const prevDayN   = selRow ? dayN(selRow.date,epoch) : 0;
-  const prevCash   = action==="BUY" ? portfolio.cash-amount    : portfolio.cash+amount;
-  const prevUAfter = action==="BUY" ? portfolio.units+prevUnits : portfolio.units-prevUnits;
-  const prevEq     = prevCash+prevUAfter*prevPrice;
+  const selRow    = selIdx!==null&&series[selIdx]?series[selIdx]:latest;
+  const prevPrice = selRow?selRow.close:0;
+  const prevUnits = prevPrice>0?amount/prevPrice:0;
+  const prevDayN  = selRow?dayN(selRow.date,epoch):0;
+  const prevCash  = action==="BUY"?portfolio.cash-amount:portfolio.cash+amount;
+  const prevUA    = action==="BUY"?portfolio.units+prevUnits:portfolio.units-prevUnits;
+  const prevEq    = prevCash+prevUA*prevPrice;
 
   // Chart geometry
-  const W=1200, H=220, PL=58, PR=20, PT=18, PB=22;
+  const W=1200,H=220,PL=58,PR=20,PT=18,PB=22;
   const geo = useMemo(()=>{
-    if (!series.length) return null;
+    if(!series.length) return null;
     const closes=series.map(s=>s.close);
-    const minC=Math.min(...closes)*0.97, maxC=Math.max(...closes)*1.03, n=series.length;
+    const minC=Math.min(...closes)*0.97,maxC=Math.max(...closes)*1.03,n=series.length;
     const x=i=>PL+(i/(n-1))*(W-PL-PR);
     const y=v=>PT+(1-(v-minC)/(maxC-minC))*(H-PT-PB);
-    return {minC,maxC,x,y,n};
+    return{minC,maxC,x,y,n};
   },[series]);
 
   const linePath = useMemo(()=>{
-    if (!geo) return "";
+    if(!geo) return "";
     return series.map((s,i)=>`${i===0?"M":"L"}${geo.x(i).toFixed(1)},${geo.y(s.close).toFixed(1)}`).join(" ");
   },[series,geo]);
 
   const ddBands = useMemo(()=>{
-    if (!geo) return [];
-    const bands=[]; let start=null;
-    for (let i=0;i<series.length;i++) {
-      if (series[i].drawdown<=-0.08&&start===null) start=i;
-      if (series[i].drawdown>-0.08&&start!==null) { bands.push([start,i-1]); start=null; }
+    if(!geo) return [];
+    const bands=[];let start=null;
+    for(let i=0;i<series.length;i++){
+      if(series[i].drawdown<=-0.08&&start===null) start=i;
+      if(series[i].drawdown>-0.08&&start!==null){bands.push([start,i-1]);start=null;}
     }
-    if (start!==null) bands.push([start,series.length-1]);
+    if(start!==null) bands.push([start,series.length-1]);
     return bands;
   },[series,geo]);
 
   const yTicks    = geo?[geo.minC,(geo.minC+geo.maxC)/2,geo.maxC]:[];
   const yearTicks = useMemo(()=>{
-    const t=[]; let last=null;
-    for (let i=0;i<series.length;i++) {
+    const t=[];let last=null;
+    for(let i=0;i<series.length;i++){
       const yr=series[i].date.slice(0,4);
-      if (yr!==last){t.push({idx:i,year:yr});last=yr;}
+      if(yr!==last){t.push({idx:i,year:yr});last=yr;}
     }
     return t;
   },[series]);
 
   const evMarkers = useMemo(()=>{
-    if (!geo) return [];
-    return EVENTS.map(ev=>{
+    if(!geo) return [];
+    return EVENTS.filter(ev=>ev.date).map(ev=>{
       const idx=series.findIndex(s=>s.date>=ev.date);
       return idx<0?null:{...ev,idx,x:geo.x(idx)};
     }).filter(Boolean);
   },[series,geo]);
 
-  function onChartClick(e) {
-    if (!geo||!chartRef.current) return;
+  function onChartClick(e){
+    if(!geo||!chartRef.current) return;
     const rect=chartRef.current.getBoundingClientRect();
     const frac=((e.clientX-rect.left)/rect.width*W-PL)/(W-PL-PR);
     const idx=Math.round(frac*(geo.n-1));
-    if (idx>=0&&idx<series.length) setSelIdx(idx);
+    if(idx>=0&&idx<series.length) setSelIdx(idx);
   }
-  function onChartMove(e) {
-    if (!geo||!chartRef.current) return;
+  function onChartMove(e){
+    if(!geo||!chartRef.current) return;
     const rect=chartRef.current.getBoundingClientRect();
     const frac=((e.clientX-rect.left)/rect.width*W-PL)/(W-PL-PR);
     const idx=Math.round(frac*(geo.n-1));
-    if (idx>=0&&idx<series.length) setHoverIdx(idx);
+    if(idx>=0&&idx<series.length) setHoverIdx(idx);
   }
 
-  function execTrade() {
-    if (!selRow||amount<=0) return;
-    const tx={id:Date.now(),day:prevDayN,date:selRow.date,price:prevPrice,action,units:prevUnits,amount,cashAfter:prevCash,unitsAfter:prevUAfter,equityAfter:prevEq};
+  function execTrade(){
+    if(!selRow||amount<=0) return;
+    const tx={id:Date.now(),day:prevDayN,date:selRow.date,price:prevPrice,action,units:prevUnits,amount,cashAfter:prevCash,unitsAfter:prevUA,equityAfter:prevEq};
     persistTx([...transactions,tx]);
     setAmount(0);
   }
 
-  function useTier(dd) {
+  function useTier(dd){
     setActiveTier(dd);
     const t=tierData.find(t=>t.drawdown===dd);
-    if (t) {
+    if(t){
       setAmount(t.amount);
       const idx=series.findIndex(s=>s.close<=t.triggerPrice);
-      if (idx>=0) setSelIdx(idx);
+      if(idx>=0) setSelIdx(idx);
       setAction("BUY");
     }
   }
 
-  // ── Render ──
-  const S = styles;
+  // FIX 1: Event pill click — jump chart to crash date
+  function onEventClick(ev){
+    setActiveEvent(ev.label);
+    if(!ev.date){
+      // START — jump to beginning
+      setSelIdx(0);
+      return;
+    }
+    if(!series.length) return;
+    const idx=series.findIndex(s=>s.date>=ev.date);
+    if(idx>=0) setSelIdx(idx);
+  }
+
+  const S=styles;
   return (
     <div>
-      {/* Ticker sub-header */}
       <div style={S.tickerBar}>
         <span style={S.tickerName}>{ticker.fullName}</span>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          {loading ? (
+          {loading?(
             <span style={{...S.dot,background:"#f5a623",animation:"pulse 1.2s infinite"}}/>
-          ) : priceData.source==="live" ? (
+          ):priceData.source==="live"?(
             <span style={{...S.dot,background:"#22c55e"}}/>
-          ) : (
+          ):(
             <span style={{...S.dot,background:"#ef4444"}}/>
           )}
           <span style={S.statusTxt}>
@@ -329,23 +351,30 @@ function TickerSim({ ticker }) {
         </div>
       </div>
 
-      {loadMsg && <div style={S.warnBanner}>{loadMsg}</div>}
+      {loadMsg&&<div style={S.warnBanner}>{loadMsg}</div>}
 
       <div style={S.grid}>
         {/* ── LEFT ── */}
         <div style={S.leftCol}>
 
-          {/* Peak / Drawdown card */}
+          {/* Peak / Drawdown */}
           <div style={S.card}>
             <div style={S.cardLabel}>Peak To Date</div>
             <div style={S.peakVal}>{fmt$(peakToDate)}</div>
             <div style={S.ddBarWrap}>
-              <div style={{...S.ddBarFill, left:`${Math.min(100,Math.max(0,(Math.abs(curDD)/0.3)*100))}%`}}/>
+              <div style={{...S.ddBarFill,left:`${Math.min(100,Math.max(0,(Math.abs(curDD)/0.3)*100))}%`}}/>
             </div>
             <div style={S.ddBarLabels}><span>-10%</span><span>-15%</span><span>-20%</span><span>-25%</span><span>-30%</span></div>
+            {/* FIX 1: clickable event pills */}
             <div style={S.eventRow}>
-              <span style={{...S.pill,...S.pillActive}}>START</span>
-              {EVENTS.map(ev=><span key={ev.label} style={S.pill}>{ev.label}</span>)}
+              {EVENTS.map(ev=>(
+                <button key={ev.label}
+                  onClick={()=>onEventClick(ev)}
+                  style={activeEvent===ev.label?{...S.pill,...S.pillActive,...S.pillBtn}:{...S.pill,...S.pillBtn}}
+                  title={ev.date?`Jump to ${ev.label}`:"Jump to start"}>
+                  {ev.label}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -353,14 +382,37 @@ function TickerSim({ ticker }) {
           <div style={S.card}>
             <div style={S.cardHdr}>PORTFOLIO</div>
             <div style={S.cardBody}>
-              <PRow label="Starting Cash"  value={fmt$(STARTING_CASH,0)} />
-              <PRow label="Cash Balance"   value={fmt$(portfolio.cash)} bold />
-              <PRow label="Units Held"     value={fmtU(portfolio.units)} bold />
-              <PRow label="Market Value"   value={fmt$(portfolio.mktVal)} bold />
+              {/* FIX 2: editable Starting Cash */}
+              <div style={{...S.rowItem,alignItems:"center"}}>
+                <span style={{color:"#64748b"}}>Starting Cash</span>
+                {editingCash?(
+                  <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                    <input
+                      autoFocus
+                      type="number"
+                      value={cashDraft}
+                      onChange={e=>setCashDraft(e.target.value)}
+                      onKeyDown={e=>{
+                        if(e.key==="Enter"){saveCash(cashDraft);setEditingCash(false);}
+                        if(e.key==="Escape") setEditingCash(false);
+                      }}
+                      style={{width:110,padding:"3px 7px",fontFamily:"'JetBrains Mono',monospace",fontSize:13,border:"1px solid #1e3a8a",borderRadius:4,textAlign:"right"}}
+                    />
+                    <button onClick={()=>{saveCash(cashDraft);setEditingCash(false);}} style={S.cashSaveBtn}>✓</button>
+                  </div>
+                ):(
+                  <button onClick={()=>{setCashDraft(String(startingCash));setEditingCash(true);}} style={S.cashEditBtn} title="Click to edit">
+                    {fmt$(startingCash,0)} ✎
+                  </button>
+                )}
+              </div>
+              <PRow label="Cash Balance"  value={fmt$(portfolio.cash)}   bold/>
+              <PRow label="Units Held"    value={fmtU(portfolio.units)}  bold/>
+              <PRow label="Market Value"  value={fmt$(portfolio.mktVal)} bold/>
               <div style={S.divider}/>
-              <PRow label="Total Equity"   value={fmt$(portfolio.equity)} highlight />
-              <PRow label="P&L"            value={fmt$(portfolio.pnl)}   vcolor={portfolio.pnl>=0?"#16a34a":"#dc2626"} />
-              <PRow label="Return %"       value={`${portfolio.ret>=0?"+":""}${portfolio.ret.toFixed(2)}%`} vcolor={portfolio.ret>=0?"#16a34a":"#dc2626"} />
+              <PRow label="Total Equity"  value={fmt$(portfolio.equity)} highlight/>
+              <PRow label="P&L"           value={fmt$(portfolio.pnl)}    vcolor={portfolio.pnl>=0?"#16a34a":"#dc2626"}/>
+              <PRow label="Return %"      value={`${portfolio.ret>=0?"+":""}${portfolio.ret.toFixed(2)}%`} vcolor={portfolio.ret>=0?"#16a34a":"#dc2626"}/>
             </div>
           </div>
 
@@ -377,10 +429,14 @@ function TickerSim({ ticker }) {
               </tr></thead>
               <tbody>
                 {tierData.map(t=>{
+                  // FIX 3: arrow only shows if user explicitly clicked this tier (activeTier !== null)
                   const active=activeTier===t.drawdown;
-                  return (
+                  return(
                     <tr key={t.drawdown} style={active?{background:"#fffbeb"}:{}}>
-                      <td style={S.td}>{active&&<span style={{color:"#f59e0b",marginRight:4}}>▸</span>}-{t.drawdown}%</td>
+                      <td style={S.td}>
+                        {active&&<span style={{color:"#f59e0b",marginRight:4}}>▸</span>}
+                        -{t.drawdown}%
+                      </td>
                       <td style={S.td}>{fmt$(t.triggerPrice)}</td>
                       <td style={S.td}>{t.pct}%</td>
                       <td style={S.tdM}>{fmt$(t.amount)}</td>
@@ -388,9 +444,15 @@ function TickerSim({ ticker }) {
                     </tr>
                   );
                 })}
-                <tr><td style={S.td} colSpan={2}>Reserve</td><td style={S.td}>0%</td><td style={S.tdM}>$0.00</td><td/></tr>
+                <tr>
+                  <td style={S.td} colSpan={2}>Reserve</td>
+                  <td style={S.td}>0%</td>
+                  <td style={S.tdM}>$0.00</td>
+                  <td/>
+                </tr>
                 <tr style={{background:"#f8fafc"}}>
-                  <td style={S.tdB}>Total</td><td/><td style={S.tdB}>100%</td><td style={S.tdMB}>{fmt$(STARTING_CASH)}</td><td/>
+                  <td style={S.tdB}>Total</td><td/><td style={S.tdB}>100%</td>
+                  <td style={S.tdMB}>{fmt$(startingCash)}</td><td/>
                 </tr>
               </tbody>
             </table>
@@ -402,12 +464,12 @@ function TickerSim({ ticker }) {
 
           {/* Chart */}
           <div style={S.chartCard}>
-            {loading ? (
+            {loading?(
               <div style={S.chartEmpty}>
                 <div style={{width:28,height:28,border:"3px solid #e2e8f0",borderTopColor:"#1e3a8a",borderRadius:"50%",animation:"spin 0.8s linear infinite",marginBottom:12}}/>
                 Fetching {ticker.id} price history…
               </div>
-            ) : series.length ? (
+            ):series.length?(
               <svg ref={chartRef} viewBox={`0 0 ${W} ${H}`} style={S.svg}
                 onClick={onChartClick} onMouseMove={onChartMove} onMouseLeave={()=>setHoverIdx(null)}>
                 {ddBands.map(([s,e],i)=>(
@@ -431,8 +493,8 @@ function TickerSim({ ticker }) {
                 ))}
                 {transactions.map(tx=>{
                   const idx=series.findIndex(s=>s.date===tx.date);
-                  if (idx<0) return null;
-                  return <circle key={tx.id} cx={geo.x(idx)} cy={geo.y(series[idx].close)} r="4" fill={tx.action==="BUY"?"#16a34a":"#dc2626"} stroke="#fff" strokeWidth="1.5"/>;
+                  if(idx<0) return null;
+                  return<circle key={tx.id} cx={geo.x(idx)} cy={geo.y(series[idx].close)} r="4" fill={tx.action==="BUY"?"#16a34a":"#dc2626"} stroke="#fff" strokeWidth="1.5"/>;
                 })}
                 {selIdx!==null&&series[selIdx]&&(
                   <circle cx={geo.x(selIdx)} cy={geo.y(series[selIdx].close)} r="5" fill="#f59e0b" stroke="#1e293b" strokeWidth="1.5"/>
@@ -441,7 +503,7 @@ function TickerSim({ ticker }) {
                   <line x1={geo.x(hoverIdx)} x2={geo.x(hoverIdx)} y1={PT} y2={H-PB} stroke="#94a3b8" strokeWidth="1" strokeDasharray="2,2"/>
                 )}
               </svg>
-            ) : (
+            ):(
               <div style={S.chartEmpty}>{loadMsg||"No data available."}</div>
             )}
             {hoverIdx!==null&&series[hoverIdx]&&(
@@ -449,7 +511,7 @@ function TickerSim({ ticker }) {
                 {fmtDt(series[hoverIdx].date)} · {fmt$(series[hoverIdx].close)} · DD {(series[hoverIdx].drawdown*100).toFixed(1)}%
               </div>
             )}
-            <div style={S.chartHint}>Click chart to select a trade date · Green/red dots = your trades</div>
+            <div style={S.chartHint}>Click chart to select a trade date · Green/red dots = your trades · Yellow dashed lines = crash events</div>
           </div>
 
           {/* Trade Input */}
@@ -479,14 +541,14 @@ function TickerSim({ ticker }) {
             <div style={S.prevBox}>
               <div style={S.prevHdr}>TRADE PREVIEW</div>
               <div style={S.prevGrid}>
-                <PF label="DAY#"        value={prevDayN}/>
-                <PF label="DATE"        value={selRow?fmtDt(selRow.date):"—"}/>
-                <PF label="PRICE"       value={fmt$(prevPrice)}/>
-                <PF label="ACTION"      value={action} color={action==="BUY"?"#16a34a":"#dc2626"}/>
-                <PF label="UNITS"       value={fmtU(prevUnits)}/>
-                <PF label="AMOUNT"      value={fmt$(amount)}/>
-                <PF label="CASH AFTER"  value={fmt$(prevCash)}/>
-                <PF label="UNITS AFTER" value={fmtU(prevUAfter)}/>
+                <PF label="DAY#"         value={prevDayN}/>
+                <PF label="DATE"         value={selRow?fmtDt(selRow.date):"—"}/>
+                <PF label="PRICE"        value={fmt$(prevPrice)}/>
+                <PF label="ACTION"       value={action} color={action==="BUY"?"#16a34a":"#dc2626"}/>
+                <PF label="UNITS"        value={fmtU(prevUnits)}/>
+                <PF label="AMOUNT"       value={fmt$(amount)}/>
+                <PF label="CASH AFTER"   value={fmt$(prevCash)}/>
+                <PF label="UNITS AFTER"  value={fmtU(prevUA)}/>
                 <PF label="EQUITY AFTER" value={fmt$(prevEq)} bold/>
               </div>
             </div>
@@ -495,9 +557,9 @@ function TickerSim({ ticker }) {
           {/* Transaction Log */}
           <div style={S.card}>
             <div style={S.cardHdr}>TRANSACTION LOG <span style={S.cardHdrSub}>{transactions.length} trades logged</span></div>
-            {transactions.length===0 ? (
+            {transactions.length===0?(
               <div style={S.empty}>No trades yet — select a date on the chart and execute a trade.</div>
-            ) : (
+            ):(
               <div style={{overflowX:"auto"}}>
                 <table style={S.tbl}>
                   <thead><tr>
@@ -533,16 +595,16 @@ function TickerSim({ ticker }) {
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
-function PRow({label,value,bold,highlight,vcolor}) {
-  return (
+function PRow({label,value,bold,highlight,vcolor}){
+  return(
     <div style={{...styles.rowItem,...(highlight?styles.rowHL:{})}}>
       <span style={{color:"#64748b"}}>{label}</span>
       <span style={{fontFamily:"'JetBrains Mono',monospace",color:vcolor||"#1e293b",...((bold||highlight)?{fontWeight:700}:{})}}>{value}</span>
     </div>
   );
 }
-function PF({label,value,bold,color}) {
-  return (
+function PF({label,value,bold,color}){
+  return(
     <div>
       <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:9,color:"#94a3b8",marginBottom:2}}>{label}</div>
       <div style={{fontFamily:"'JetBrains Mono',monospace",fontSize:13,color:color||"#1e293b",...(bold?{fontWeight:700}:{})}}>{value}</div>
@@ -551,31 +613,21 @@ function PF({label,value,bold,color}) {
 }
 
 // ─── Root App ─────────────────────────────────────────────────────────────────
-function App() {
-  const [activeTicker, setActiveTicker] = useState("QQQ");
-
-  return (
+function App(){
+  const [activeTicker,setActiveTicker]=useState("QQQ");
+  return(
     <div style={styles.page}>
-      {/* App Header */}
       <div style={styles.appHdr}>
         <div>
           <div style={styles.eyebrow}>BACKTESTING SIMULATOR · DRAWDOWN-TRIGGERED DCA</div>
           <div style={styles.title}>Crash Buying Simulator</div>
         </div>
         <div style={styles.legend}>
-          <span style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:"#64748b"}}>
-            <span style={{width:8,height:8,borderRadius:"50%",background:"#16a34a",display:"inline-block"}}/>Buy
-          </span>
-          <span style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:"#64748b"}}>
-            <span style={{width:8,height:8,borderRadius:"50%",background:"#dc2626",display:"inline-block"}}/>Sell
-          </span>
-          <span style={{display:"flex",alignItems:"center",gap:5,fontSize:11,fontFamily:"'JetBrains Mono',monospace",color:"#64748b"}}>
-            <span style={{width:28,height:10,borderRadius:2,background:"#fca5a5",opacity:0.6,display:"inline-block"}}/>Drawdown &gt;8%
-          </span>
+          <span style={styles.legendItem}><span style={{...styles.legendDot,background:"#16a34a"}}/>Buy trade</span>
+          <span style={styles.legendItem}><span style={{...styles.legendDot,background:"#dc2626"}}/>Sell trade</span>
+          <span style={styles.legendItem}><span style={{width:24,height:10,borderRadius:2,background:"#fca5a5",opacity:0.7,display:"inline-block"}}/>Drawdown &gt;8%</span>
         </div>
       </div>
-
-      {/* Ticker Tabs */}
       <div style={styles.tabBar}>
         {TICKERS.map(t=>(
           <button key={t.id} onClick={()=>setActiveTicker(t.id)} style={activeTicker===t.id?styles.tabActive:styles.tab}>
@@ -583,8 +635,6 @@ function App() {
           </button>
         ))}
       </div>
-
-      {/* Active Simulator */}
       {TICKERS.map(t=>(
         <div key={t.id} style={{display:activeTicker===t.id?"block":"none"}}>
           <TickerSim ticker={t}/>
@@ -595,14 +645,15 @@ function App() {
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-const NAVY="#1e3a8a", NAVY_D="#162a5e", BORDER="#e2e8f0", MONO="'JetBrains Mono',monospace";
-
-const styles = {
+const NAVY="#1e3a8a",NAVY_D="#162a5e",BORDER="#e2e8f0",MONO="'JetBrains Mono',monospace";
+const styles={
   page:      {fontFamily:"'DM Sans',-apple-system,sans-serif",background:"#f8f9fb",minHeight:"100vh",color:"#1e293b"},
   appHdr:    {display:"flex",justifyContent:"space-between",alignItems:"flex-end",padding:"20px 24px 0"},
   eyebrow:   {fontFamily:MONO,fontSize:10,letterSpacing:1.2,color:"#64748b",marginBottom:4},
   title:     {fontSize:26,fontWeight:800,color:NAVY_D,letterSpacing:-0.5},
   legend:    {display:"flex",gap:16,alignItems:"center"},
+  legendItem:{display:"flex",alignItems:"center",gap:5,fontSize:11,fontFamily:MONO,color:"#64748b"},
+  legendDot: {width:8,height:8,borderRadius:"50%",display:"inline-block"},
   tabBar:    {display:"flex",gap:0,padding:"14px 24px 0",borderBottom:`1px solid ${BORDER}`,background:"#fff",position:"sticky",top:0,zIndex:10},
   tab:       {fontFamily:MONO,fontSize:12,fontWeight:700,padding:"10px 22px",border:"none",borderBottom:"3px solid transparent",background:"none",color:"#64748b",cursor:"pointer",letterSpacing:0.5},
   tabActive: {fontFamily:MONO,fontSize:12,fontWeight:700,padding:"10px 22px",border:"none",borderBottom:`3px solid ${NAVY}`,background:"none",color:NAVY,cursor:"pointer",letterSpacing:0.5},
@@ -620,15 +671,18 @@ const styles = {
   ddBarWrap: {height:6,margin:"0 16px",borderRadius:3,background:"linear-gradient(90deg,#1e3a8a 0%,#fbbf24 50%,#dc2626 100%)",position:"relative"},
   ddBarFill: {position:"absolute",top:-3,width:2,height:12,background:"#1e293b"},
   ddBarLabels:{display:"flex",justifyContent:"space-between",fontFamily:MONO,fontSize:9,color:"#94a3b8",padding:"4px 16px 12px"},
-  eventRow:  {display:"flex",flexWrap:"wrap",gap:5,padding:"0 16px 14px"},
-  pill:      {fontFamily:MONO,fontSize:10,padding:"3px 9px",borderRadius:12,background:"#f1f5f9",color:"#475569",border:`1px solid ${BORDER}`},
+  eventRow:  {display:"flex",flexWrap:"wrap",gap:6,padding:"0 16px 14px"},
+  pill:      {fontFamily:MONO,fontSize:10,padding:"4px 10px",borderRadius:12,background:"#f1f5f9",color:"#475569",border:`1px solid ${BORDER}`},
   pillActive:{background:NAVY,color:"#fff",border:`1px solid ${NAVY}`,fontWeight:700},
+  pillBtn:   {cursor:"pointer",outline:"none",transition:"all 0.15s"},
   cardHdr:   {background:NAVY,color:"#fff",fontFamily:MONO,fontSize:11,fontWeight:700,letterSpacing:0.8,padding:"9px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"},
   cardHdrSub:{fontWeight:400,fontSize:10,color:"#c7d2fe"},
   cardBody:  {padding:"6px 16px 14px"},
   rowItem:   {display:"flex",justifyContent:"space-between",padding:"7px 0",fontSize:13},
   rowHL:     {background:"#fffbeb",margin:"0 -16px",padding:"8px 16px"},
   divider:   {borderTop:`1px solid ${BORDER}`,margin:"3px 0"},
+  cashEditBtn:{fontFamily:MONO,fontSize:13,fontWeight:700,color:NAVY,background:"none",border:"none",cursor:"pointer",padding:"0",borderBottom:`1px dashed ${NAVY}`},
+  cashSaveBtn:{fontFamily:MONO,fontSize:12,fontWeight:700,color:"#fff",background:"#16a34a",border:"none",borderRadius:4,padding:"3px 8px",cursor:"pointer"},
   tbl:       {width:"100%",borderCollapse:"collapse",fontSize:12},
   th:        {textAlign:"left",padding:"7px 10px",fontFamily:MONO,fontSize:9,color:"#94a3b8",borderBottom:`1px solid ${BORDER}`,whiteSpace:"nowrap"},
   td:        {padding:"7px 10px",borderBottom:"1px solid #f1f5f9",color:"#334155",whiteSpace:"nowrap"},
@@ -663,8 +717,13 @@ const styles = {
   delBtn:    {border:"none",background:"none",color:"#94a3b8",fontSize:16,cursor:"pointer"},
 };
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<App/>);
+try{
+  const root=ReactDOM.createRoot(document.getElementById("root"));
+  root.render(<App/>);
+}catch(err){
+  document.getElementById("root").innerHTML='<div style="font-family:monospace;padding:24px;color:#dc2626;">Render error: '+err.message+'</div>';
+  console.error(err);
+}
 </script>
 </body>
 </html>
