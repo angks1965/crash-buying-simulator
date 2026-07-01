@@ -36,13 +36,13 @@ const {useState,useEffect,useCallback,useMemo,useRef} = React;
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const TICKERS = [
-  // Stooq symbols: ^spx (index), spy.us, qqq.us, voo.us, urth.us
-  // Yahoo Finance fallback: ^GSPC, SPY, QQQ, VOO, URTH
-  { id:"SPX",  label:"SPX",  fullName:"S&P 500 Index",          fhSym:"SPY",  isIndex:true  },
-  { id:"SPY",  label:"SPY",  fullName:"SPDR S&P 500 ETF",       fhSym:"SPY"   },
-  { id:"QQQ",  label:"QQQ",  fullName:"Invesco Nasdaq-100 ETF",  fhSym:"QQQ"   },
-  { id:"VOO",  label:"VOO",  fullName:"Vanguard S&P 500 ETF",    fhSym:"VOO"   },
-  { id:"URTH", label:"URTH", fullName:"iShares MSCI World ETF",  fhSym:"URTH"  },
+  // Stooq: ^spx gives real index (~7500 level), not ETF prices
+  // SPX has no Finnhub symbol — live quote via Yahoo Finance instead
+  { id:"SPX",  label:"SPX",  fullName:"S&P 500 Index",          fhSym:null,   yfSym:"^GSPC", isIndex:true  },
+  { id:"SPY",  label:"SPY",  fullName:"SPDR S&P 500 ETF",       fhSym:"SPY",  yfSym:"SPY"   },
+  { id:"QQQ",  label:"QQQ",  fullName:"Invesco Nasdaq-100 ETF",  fhSym:"QQQ",  yfSym:"QQQ"   },
+  { id:"VOO",  label:"VOO",  fullName:"Vanguard S&P 500 ETF",    fhSym:"VOO",  yfSym:"VOO"   },
+  { id:"URTH", label:"URTH", fullName:"iShares MSCI World ETF",  fhSym:"URTH", yfSym:"URTH"  },
 ];
 
 const TIERS = [
@@ -63,7 +63,7 @@ const EVENTS = [
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 const FH_KEY  = "cbs_fh_key_v1"; // Finnhub — live quotes only
-const CACHE_V = "cbs_v11"; // v11: Stooq+Yahoo approach, no AV key needed
+const CACHE_V = "cbs_v12"; // v12: SPX real index via ^spx/^GSPC, YF live quote
 const getKey  = k=>{ try{return localStorage.getItem(k)||"";}catch(e){return "";} };
 const saveKey = (k,v)=>{ try{localStorage.setItem(k,v.trim());}catch(e){} };
 
@@ -161,7 +161,7 @@ const toUnix = s=>Math.floor(new Date(s).getTime()/1000);
 // AV fetch removed — using Stooq + Yahoo Finance (no API key needed)
 
 // ─── Finnhub: live quotes only (history via AV monthly) ──────────────────────
-// ─── Finnhub live quote ───────────────────────────────────────────────────────
+// ─── Live quotes: Finnhub for ETFs, Yahoo Finance for SPX (^GSPC) ───────────
 async function fetchFHQuote(fhSym,fhKey){
   const url=`https://finnhub.io/api/v1/quote?symbol=${fhSym}&token=${fhKey}`;
   const r=await fetch(url,{signal:AbortSignal.timeout(10000)});
@@ -169,6 +169,21 @@ async function fetchFHQuote(fhSym,fhKey){
   const json=await r.json();
   if(!json.c) throw new Error("No quote data");
   return {price:json.c, change:json.d, changePct:json.dp, prevClose:json.pc};
+}
+
+async function fetchYFQuote(yfSym){
+  // Yahoo Finance quote via proxy — used for SPX (^GSPC) since Finnhub free
+  // tier doesn't support index symbols
+  const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yfSym)}?range=1d&interval=1m`;
+  const json=await fetchWithProxy(url,true);
+  const result=json?.chart?.result?.[0];
+  const meta=result?.meta;
+  if(!meta?.regularMarketPrice) throw new Error("No YF quote data");
+  const price=meta.regularMarketPrice;
+  const prevClose=meta.previousClose||meta.chartPreviousClose||price;
+  const change=price-prevClose;
+  const changePct=(change/prevClose)*100;
+  return {price, change, changePct, prevClose};
 }
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
@@ -225,13 +240,24 @@ function TickerSim({ticker,priceData,fhKey}){
   const [liveQuote,  setLiveQuote ]=useState(null);
   const chartRef=useRef(null);
 
-  // Fetch live quote from Finnhub every 60s when key present
+  // Fetch live quote every 60s
+  // SPX: Yahoo Finance (^GSPC) via proxy — no Finnhub key needed
+  // ETFs: Finnhub if key provided, else Yahoo Finance fallback
   useEffect(()=>{
-    if(!fhKey||fhKey.length<5) return;
     let cancelled=false;
     async function getQuote(){
       try{
-        const q=await fetchFHQuote(ticker.fhSym,fhKey);
+        let q;
+        if(!ticker.fhSym){
+          // Index (SPX) — always use Yahoo Finance
+          q=await fetchYFQuote(ticker.yfSym);
+        } else if(fhKey&&fhKey.length>5){
+          // ETF with Finnhub key
+          q=await fetchFHQuote(ticker.fhSym,fhKey);
+        } else {
+          // ETF without Finnhub key — use Yahoo Finance
+          q=await fetchYFQuote(ticker.yfSym);
+        }
         if(!cancelled) setLiveQuote(q);
       }catch(e){console.warn("[CBS] quote",ticker.id,e.message);}
     }
