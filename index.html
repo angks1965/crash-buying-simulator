@@ -39,11 +39,11 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const TICKERS = [
-  { id:"SPX",  label:"SPX",  fullName:"S&P 500 Index",          yahooSym:"%5EGSPC", stooqSym:"^spx"    },
-  { id:"SPY",  label:"SPY",  fullName:"SPDR S&P 500 ETF",       yahooSym:"SPY",     stooqSym:"spy.us"  },
-  { id:"QQQ",  label:"QQQ",  fullName:"Invesco Nasdaq-100 ETF",  yahooSym:"QQQ",     stooqSym:"qqq.us"  },
-  { id:"VOO",  label:"VOO",  fullName:"Vanguard S&P 500 ETF",    yahooSym:"VOO",     stooqSym:"voo.us"  },
-  { id:"URTH", label:"URTH", fullName:"iShares MSCI World ETF",  yahooSym:"URTH",    stooqSym:"urth.us" },
+  { id:"SPX",  label:"SPX",  fullName:"S&P 500 Index",          avSym:"^GSPC" }, // ^GSPC works with TIME_SERIES_WEEKLY on free tier
+  { id:"SPY",  label:"SPY",  fullName:"SPDR S&P 500 ETF",       avSym:"SPY"   },
+  { id:"QQQ",  label:"QQQ",  fullName:"Invesco Nasdaq-100 ETF",  avSym:"QQQ"   },
+  { id:"VOO",  label:"VOO",  fullName:"Vanguard S&P 500 ETF",    avSym:"VOO"   },
+  { id:"URTH", label:"URTH", fullName:"iShares MSCI World ETF",  avSym:"URTH"  },
 ];
 
 const TIERS = [
@@ -63,18 +63,10 @@ const EVENTS = [
   { label:"2025 Liberation Day",date:"2025-04-02"   },
 ];
 
-const CORS_PROXIES = [
-  // Direct attempt first (works if target allows CORS from github.io)
-  u=>u,
-  // Corsfix — free for open source, no key, github.io supported
-  u=>`https://proxy.corsfix.com/?${encodeURIComponent(u)}`,
-  // ThingProxy — reliable public proxy
-  u=>`https://thingproxy.freeboard.io/fetch/${u}`,
-  // CodeTabs — rate limited but stable
-  u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-  // AllOrigins fallback
-  u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-];
+// ─── Alpha Vantage API key (stored in localStorage) ─────────────────────────
+const AV_KEY_STORAGE = "cbs_av_key_v1";
+function getAvKey(){ try{ return localStorage.getItem(AV_KEY_STORAGE)||""; }catch(e){ return ""; } }
+function saveAvKey(k){ try{ localStorage.setItem(AV_KEY_STORAGE,k.trim()); }catch(e){} }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt$ = (n,d=2)=>{
@@ -86,92 +78,64 @@ const fmtU  = n=>(n==null||isNaN(n))?"0.0000":n.toLocaleString("en-US",{minimumF
 const fmtDt = d=>{ const dt=typeof d==="string"?new Date(d):d; return dt.toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}); };
 const dayN  = (ds,ep)=>Math.round((new Date(ds)-ep)/86400000);
 
-async function fetchProxy(url){
-  let last;
-  for(const wrap of CORS_PROXIES){
-    const wrapped=wrap(url);
-    try{
-      const r=await fetch(wrapped,{signal:AbortSignal.timeout(12000)});
-      if(!r.ok) throw new Error(`HTTP ${r.status}`);
-      const t=await r.text();
-      if(!t||t.length<20) throw new Error("empty");
-      // Reject HTML error pages returned as 200
-      if(t.trim().startsWith("<html")||t.trim().startsWith("<!DOCTYPE")) throw new Error("got HTML not data");
-      console.log("[CBS] data via:", wrapped===url?"direct":new URL(wrapped).hostname);
-      return t;
-    }catch(e){
-      console.warn("[CBS] proxy failed:", wrapped===url?"direct":wrapped.split("/")[2], e.message);
-      last=e;
-    }
-  }
-  throw last||new Error("all proxies failed");
-}
-
-function parseStooq(csv){
-  const rows=[];
-  for(const line of csv.trim().split("\n").slice(1)){
-    const p=line.split(",");
-    if(p.length<5) continue;
-    const c=parseFloat(p[4]);
-    if(p[0]&&!isNaN(c)) rows.push({date:p[0],close:c});
-  }
+// ─── Alpha Vantage fetch ─────────────────────────────────────────────────────
+// AV has proper CORS headers — no proxy needed
+async function fetchAV(avSym, apiKey){
+  // TIME_SERIES_WEEKLY returns full 20+ year history on the free tier
+  // Weekly granularity is sufficient for drawdown-trigger backtesting
+  const url=`https://www.alphavantage.co/query?function=TIME_SERIES_WEEKLY&symbol=${avSym}&apikey=${apiKey}`;
+  const r=await fetch(url,{signal:AbortSignal.timeout(30000)});
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  const json=await r.json();
+  if(json["Note"]||json["Information"]) throw new Error(json["Note"]||json["Information"]);
+  const ts=json["Weekly Time Series"];
+  if(!ts) throw new Error("No weekly time series in response — check API key");
+  const rows=Object.entries(ts)
+    .filter(([d])=>d>="2016-01-01")
+    .map(([d,v])=>({date:d,close:parseFloat(v["4. close"])}))
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  if(rows.length<50) throw new Error("Too few rows returned: "+rows.length);
   return rows;
 }
 
-async function fetchYahoo(sym){
-  const url=`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=10y`;
-  const text=await fetchProxy(url);
-  const json=JSON.parse(text);
-  const ts=json.chart.result[0].timestamp;
-  const close=json.chart.result[0].indicators.quote[0].close;
-  const rows=[];
-  for(let i=0;i<ts.length;i++){
-    if(close[i]==null) continue;
-    const d=new Date(ts[i]*1000);
-    rows.push({date:d.toISOString().slice(0,10),close:close[i]});
-  }
-  return rows.filter(r=>r.date>="2016-01-01");
-}
+const CACHE_KEY = id=>`cbs_prices_v5_weekly_${id}`; // v5 = ^GSPC fix for SPX
 
-async function fetchStooq(sym){
-  const url=`https://stooq.com/q/d/l/?s=${sym}&i=d`;
-  const text=await fetchProxy(url);
-  return parseStooq(text).filter(r=>r.date>="2016-01-01");
-}
-
-async function loadPrices(ticker){
-  const cacheKey=`cbs_prices_v2_${ticker.id}`;
-  const attempts=[
-    {label:"Yahoo Finance", fn:()=>fetchYahoo(ticker.yahooSym)},
-    {label:"Stooq",         fn:()=>fetchStooq(ticker.stooqSym)},
-  ];
-  for(const {label,fn} of attempts){
-    try{
-      const rows=await fn();
-      if(rows.length<50) throw new Error("too few rows");
-      try{localStorage.setItem(cacheKey,JSON.stringify({rows,ts:Date.now()}));}catch(e){}
-      console.log("[CBS] loaded",rows.length,"rows from",label);
-      return {rows,source:"live",sourceLabel:label};
-    }catch(e){
-      console.warn("[CBS]",label,"failed:",e.message);
-    }
-  }
+function loadFromCache(id){
   try{
-    const c=localStorage.getItem(cacheKey);
-    if(c){
-      const{rows,ts}=JSON.parse(c);
-      console.log("[CBS] using cached data from",new Date(ts).toLocaleDateString());
-      return{rows,source:"cached",cacheDate:new Date(ts).toLocaleDateString()};
-    }
+    const c=localStorage.getItem(CACHE_KEY(id));
+    if(c){const{rows,ts}=JSON.parse(c);return{rows,source:"cached",cacheDate:new Date(ts).toLocaleDateString()};}
   }catch(e){}
-  return {rows:[],source:"none"};
+  return null;
 }
+
+function saveToCache(id,rows){
+  try{localStorage.setItem(CACHE_KEY(id),JSON.stringify({rows,ts:Date.now()}));}catch(e){}
+}
+
+async function fetchTickerLive(ticker, apiKey){
+  const rows=await fetchAV(ticker.avSym, apiKey);
+  if(rows.length<50) throw new Error("too few rows: "+rows.length);
+  saveToCache(ticker.id, rows);
+  console.log("[CBS] loaded",rows.length,"rows for",ticker.id);
+  return {rows,source:"live",sourceLabel:"Alpha Vantage"};
+}
+
+// Sleep helper for rate limiting
+const sleep = ms=>new Promise(r=>setTimeout(r,ms));
 
 // ─── Per-ticker Simulator ────────────────────────────────────────────────────
-function TickerSim({ticker}){
-  const [priceData, setPriceData] = useState({rows:[],source:""});
-  const [loading,   setLoading]   = useState(true);
-  const [loadMsg,   setLoadMsg]   = useState("");
+function TickerSim({ticker, priceData}){
+  // priceData passed from App's central store — no internal fetching
+  const loading = priceData.source==="" || priceData.source==="loading" || priceData.source==="waiting";
+  const loadMsg = priceData.source==="cached"
+    ? `Cached data (${priceData.cacheDate}) — refresh by changing API key`
+    : priceData.source==="error"
+    ? `Error: ${priceData.errorMsg}`
+    : priceData.source==="waiting"
+    ? "Rate limited — retrying in ~15s…"
+    : priceData.source==="nokey"
+    ? "Enter your Alpha Vantage API key above to load data"
+    : "";
 
   const txKey   = `cbs_tx_v2_${ticker.id}`;
   const cashKey = `cbs_cash_v2_${ticker.id}`;
@@ -195,18 +159,7 @@ function TickerSim({ticker}){
   const [hoverIdx,    setHoverIdx]    = useState(null);
   const chartRef = useRef(null);
 
-  useEffect(()=>{
-    let cancelled=false;
-    setLoading(true); setLoadMsg("");
-    loadPrices(ticker).then(result=>{
-      if(cancelled) return;
-      setPriceData(result);
-      setLoading(false);
-      if(result.source==="cached") setLoadMsg(`Live fetch failed — showing cached data (${result.cacheDate})`);
-      else if(result.source==="none") setLoadMsg("Couldn't load price data. Try refreshing.");
-    });
-    return()=>{cancelled=true;};
-  },[ticker.id]);
+
 
   const persistTx = useCallback(next=>{
     setTransactions(next);
@@ -390,11 +343,21 @@ function TickerSim({ticker}){
             <span style={{...S.dot,background:"#f5a623",animation:"pulse 1.2s infinite"}}/>
           ):priceData.source==="live"?(
             <span style={{...S.dot,background:"#22c55e"}}/>
+          ):priceData.source==="cached"?(
+            <span style={{...S.dot,background:"#f59e0b"}}/>
           ):(
             <span style={{...S.dot,background:"#ef4444"}}/>
           )}
           <span style={S.statusTxt}>
-            {loading?"Fetching data…":priceData.source==="live"?`Live · ${priceData.sourceLabel||""}`:priceData.source==="cached"?`Cached (${priceData.cacheDate})`:"No data"}
+            {loading
+              ? (priceData.source==="waiting"?"Rate limited, retrying…":"Fetching…")
+              : priceData.source==="live"
+              ? `Live · Alpha Vantage · ${priceData.rows.length} weeks`
+              : priceData.source==="cached"
+              ? `Cached · ${priceData.cacheDate}`
+              : priceData.source==="nokey"
+              ? "Enter API key above"
+              : "Error"}
           </span>
         </div>
       </div>
@@ -574,14 +537,20 @@ function TickerSim({ticker}){
                 )}
               </svg>
             ):(
-              <div style={S.chartEmpty}>{loadMsg||"No data available."}</div>
+              <div style={S.chartEmpty}>
+              {priceData.source==="nokey"&&"Enter your Alpha Vantage API key above to load data"}
+              {priceData.source==="waiting"&&"⟳ Rate limited — retrying shortly…"}
+              {priceData.source==="error"&&`Error: ${priceData.errorMsg}`}
+              {priceData.source==="loading"&&"Fetching price history…"}
+              {(priceData.source===""||(!priceData.rows?.length&&!["nokey","waiting","error","loading"].includes(priceData.source)))&&(loadMsg||"No data available.")}
+            </div>
             )}
             {hoverIdx!==null&&series[hoverIdx]&&(
               <div style={S.tooltip}>
                 {fmtDt(series[hoverIdx].date)} · {fmt$(series[hoverIdx].close)} · DD {(series[hoverIdx].drawdown*100).toFixed(1)}%
               </div>
             )}
-            <div style={S.chartHint}>Click chart to select a trade date · Green/red dots = your trades · Yellow dashed lines = crash events</div>
+            <div style={S.chartHint}>Weekly data · Click chart to select a trade date · Green/red dots = your trades · Yellow dashed lines = crash events</div>
           </div>
 
           {/* Trade Input */}
@@ -685,11 +654,78 @@ function PF({label,value,bold,color}){
 // ─── Root App ─────────────────────────────────────────────────────────────────
 function App(){
   const [activeTicker,setActiveTicker]=useState("QQQ");
+  const [apiKey, setApiKey]=useState(()=>getAvKey());
+  const [keyDraft, setKeyDraft]=useState(()=>getAvKey());
+  const [keyEditing, setKeyEditing]=useState(()=>!getAvKey());
+
+  // Central price data store: { SPX: {rows,source,...}, SPY: {...}, ... }
+  const [priceStore, setPriceStore]=useState(()=>{
+    // Initialise from cache for all tickers immediately
+    const store={};
+    for(const t of TICKERS){
+      const cached=loadFromCache(t.id);
+      store[t.id]=cached||{rows:[],source:"nokey"};
+    }
+    return store;
+  });
+  const [fetchQueue, setFetchQueue]=useState([]); // ticker ids queued to fetch
+  const [fetching,   setFetching]  =useState(null); // ticker id currently fetching
+
+  function applyKey(){
+    const k=keyDraft.trim();
+    saveAvKey(k);
+    setApiKey(k);
+    setKeyEditing(false);
+    if(k.length>5){
+      // Queue all tickers that have no live data yet
+      setFetchQueue(TICKERS.map(t=>t.id));
+    }
+  }
+
+  // Sequential fetch queue processor — 1.3s between requests for AV rate limit
+  useEffect(()=>{
+    if(!apiKey||apiKey.length<=5||fetchQueue.length===0||fetching) return;
+    const [next,...rest]=fetchQueue;
+    const ticker=TICKERS.find(t=>t.id===next);
+    if(!ticker) return;
+    setFetching(next);
+    setFetchQueue(rest);
+    setPriceStore(s=>({...s,[next]:{...s[next],source:"loading"}}));
+    fetchTickerLive(ticker,apiKey)
+      .then(result=>{
+        setPriceStore(s=>({...s,[next]:result}));
+        setFetching(null);
+      })
+      .catch(e=>{
+        console.warn("[CBS] fetch error",next,":",e.message);
+        // On rate limit, requeue at end after delay
+        const isRateLimit=e.message.includes("sparingly")||e.message.includes("per se");
+        if(isRateLimit){
+          setPriceStore(s=>({...s,[next]:{...s[next],source:"waiting",errorMsg:"Rate limited — retrying…"}}));
+          setTimeout(()=>setFetchQueue(q=>[...q,next]),15000);
+        } else {
+          setPriceStore(s=>({...s,[next]:{rows:[],source:"error",errorMsg:e.message.slice(0,120)}}));
+        }
+        setFetching(null);
+      });
+  },[fetchQueue,fetching,apiKey]);
+
+  // Kick off fetch queue when apiKey is already set on mount
+  useEffect(()=>{
+    if(!apiKey||apiKey.length<=5) return;
+    // Only fetch tickers not already cached live
+    const needFetch=TICKERS.filter(t=>{
+      const d=priceStore[t.id];
+      return !d||d.source==="nokey"||d.source==="error";
+    }).map(t=>t.id);
+    if(needFetch.length>0) setFetchQueue(needFetch);
+  },[apiKey]);
+
   return(
     <div style={styles.page}>
       <div style={styles.appHdr}>
         <div>
-          <div style={styles.eyebrow}>BACKTESTING SIMULATOR · DRAWDOWN-TRIGGERED DCA</div>
+          <div style={styles.eyebrow}>BACKTESTING SIMULATOR · DRAWDOWN-TRIGGERED DCA · WEEKLY PRICE DATA</div>
           <div style={styles.title}>Crash Buying Simulator</div>
         </div>
         <div style={styles.legend}>
@@ -698,6 +734,43 @@ function App(){
           <span style={styles.legendItem}><span style={{width:24,height:10,borderRadius:2,background:"#fca5a5",opacity:0.7,display:"inline-block"}}/>Drawdown &gt;8%</span>
         </div>
       </div>
+
+      {/* Alpha Vantage API Key Bar */}
+      <div style={styles.keyBar}>
+        <span style={styles.keyLabel}>DATA SOURCE</span>
+        {fetching&&<span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:"#f59e0b",animation:"pulse 1s infinite"}}>
+          ⟳ Fetching {fetching}{fetchQueue.length>0?` (+${fetchQueue.length} queued)`:""} …
+        </span>}
+        {keyEditing?(
+          <div style={{display:"flex",alignItems:"center",gap:8,flex:1}}>
+            <input
+              autoFocus
+              type="text"
+              placeholder="Paste your Alpha Vantage API key here…"
+              value={keyDraft}
+              onChange={e=>setKeyDraft(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter")applyKey();}}
+              style={styles.keyInput}
+            />
+            <button onClick={applyKey} style={styles.keyApplyBtn}>Load Data</button>
+            <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener"
+               style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:"#6366f1",textDecoration:"none"}}>
+              Get free key ↗
+            </a>
+          </div>
+        ):(
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:"#334155"}}>
+              Alpha Vantage · {apiKey?`key: ****${apiKey.slice(-4)}`:"no key set"}
+            </span>
+            <button onClick={()=>{setKeyDraft(apiKey);setKeyEditing(true);}} style={styles.keyChangeBtn}>Change</button>
+          </div>
+        )}
+        <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,color:"#94a3b8",marginLeft:"auto",whiteSpace:"nowrap"}}>
+          Free · 25 req/day · CORS-safe
+        </span>
+      </div>
+
       <div style={styles.tabBar}>
         {TICKERS.map(t=>(
           <button key={t.id} onClick={()=>setActiveTicker(t.id)} style={activeTicker===t.id?styles.tabActive:styles.tab}>
@@ -707,7 +780,7 @@ function App(){
       </div>
       {TICKERS.map(t=>(
         <div key={t.id} style={{display:activeTicker===t.id?"block":"none"}}>
-          <TickerSim ticker={t}/>
+          <TickerSim ticker={t} priceData={priceStore[t.id]||{rows:[],source:"nokey"}}/>
         </div>
       ))}
     </div>
@@ -785,6 +858,11 @@ const styles={
   buyTag:    {fontFamily:MONO,fontSize:10,fontWeight:700,color:"#16a34a",background:"#dcfce7",padding:"2px 7px",borderRadius:4},
   sellTag:   {fontFamily:MONO,fontSize:10,fontWeight:700,color:"#dc2626",background:"#fee2e2",padding:"2px 7px",borderRadius:4},
   delBtn:    {border:"none",background:"none",color:"#94a3b8",fontSize:16,cursor:"pointer"},
+  keyBar:    {display:"flex",alignItems:"center",gap:12,padding:"10px 24px",background:"#fff",borderBottom:`1px solid ${BORDER}`},
+  keyLabel:  {fontFamily:MONO,fontSize:9,letterSpacing:1.2,color:"#94a3b8",whiteSpace:"nowrap"},
+  keyInput:  {flex:1,maxWidth:420,padding:"7px 12px",fontFamily:MONO,fontSize:12,border:`1px solid ${BORDER}`,borderRadius:6,color:"#1e293b"},
+  keyApplyBtn:{fontFamily:MONO,fontSize:11,fontWeight:700,color:"#fff",background:"#1e3a8a",border:"none",borderRadius:6,padding:"7px 16px",cursor:"pointer"},
+  keyChangeBtn:{fontFamily:MONO,fontSize:10,color:"#64748b",background:"#f1f5f9",border:`1px solid ${BORDER}`,borderRadius:4,padding:"3px 10px",cursor:"pointer"},
 };
 
 try{
