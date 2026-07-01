@@ -319,7 +319,33 @@ function TickerSim({ticker}){
     }
   }
 
-  // FIX 1: Event pill click — jump chart to crash date
+  // Smart Suggest: find highest drawdown tier currently triggered
+  function smartSuggest(){
+    if(!latest||!peakToDate) return;
+    const curDDPct=Math.abs(curDD)*100;
+    const triggered=[...tierData].reverse().find(t=>curDDPct>=t.drawdown);
+    if(triggered){ useTier(triggered.drawdown); }
+    else { useTier(tierData[0].drawdown); }
+  }
+
+  // Reset portfolio for this ticker
+  function resetPortfolio(){
+    if(!window.confirm("Reset all "+ticker.id+" trades? This cannot be undone.")) return;
+    persistTx([]);
+    setActiveTier(null);
+    setAmount(0);
+    setSelIdx(null);
+    setActiveEvent("START");
+  }
+
+  // Which tiers are currently triggered by latest price
+  const triggeredTiers=useMemo(()=>{
+    if(!latest||!peakToDate) return new Set();
+    const pct=Math.abs(curDD)*100;
+    return new Set(TIERS.filter(t=>pct>=t.drawdown).map(t=>t.drawdown));
+  },[curDD,latest,peakToDate]);
+
+  // Event pill click — jump chart to crash date
   function onEventClick(ev){
     setActiveEvent(ev.label);
     if(!ev.date){
@@ -360,7 +386,18 @@ function TickerSim({ticker}){
           {/* Peak / Drawdown */}
           <div style={S.card}>
             <div style={S.cardLabel}>Peak To Date</div>
-            <div style={S.peakVal}>{fmt$(peakToDate)}</div>
+            <div style={{display:"flex",alignItems:"baseline",gap:12,padding:"4px 16px 2px"}}>
+              <div style={S.peakVal}>{fmt$(peakToDate)}</div>
+              <div style={{
+                fontFamily:"'JetBrains Mono',monospace",
+                fontSize:15,
+                fontWeight:700,
+                color: curDD<=-0.10?"#dc2626": curDD<=-0.05?"#f59e0b":"#16a34a",
+                letterSpacing:-0.3
+              }}>
+                {curDD===0?"ATH ▲":`${(curDD*100).toFixed(2)}% from ATH`}
+              </div>
+            </div>
             <div style={S.ddBarWrap}>
               <div style={{...S.ddBarFill,left:`${Math.min(100,Math.max(0,(Math.abs(curDD)/0.3)*100))}%`}}/>
             </div>
@@ -380,7 +417,12 @@ function TickerSim({ticker}){
 
           {/* Portfolio */}
           <div style={S.card}>
-            <div style={S.cardHdr}>PORTFOLIO</div>
+            <div style={S.cardHdr}>
+              PORTFOLIO
+              <button onClick={resetPortfolio} style={{fontFamily:"'JetBrains Mono',monospace",fontSize:10,fontWeight:700,color:"#fca5a5",background:"none",border:"1px solid #fca5a5",borderRadius:4,padding:"3px 10px",cursor:"pointer",letterSpacing:0.5}}>
+                ↺ Reset
+              </button>
+            </div>
             <div style={S.cardBody}>
               {/* FIX 2: editable Starting Cash */}
               <div style={{...S.rowItem,alignItems:"center"}}>
@@ -429,18 +471,24 @@ function TickerSim({ticker}){
               </tr></thead>
               <tbody>
                 {tierData.map(t=>{
-                  // FIX 3: arrow only shows if user explicitly clicked this tier (activeTier !== null)
                   const active=activeTier===t.drawdown;
+                  const triggered=triggeredTiers.has(t.drawdown);
+                  const rowStyle={
+                    ...(active?{background:"#fffbeb"}:{}),
+                    ...(triggered&&!active?{background:"#f0fdf4"}:{}),
+                    borderLeft: triggered?"3px solid #16a34a":"3px solid transparent",
+                  };
                   return(
-                    <tr key={t.drawdown} style={active?{background:"#fffbeb"}:{}}>
+                    <tr key={t.drawdown} style={rowStyle}>
                       <td style={S.td}>
                         {active&&<span style={{color:"#f59e0b",marginRight:4}}>▸</span>}
+                        {triggered&&!active&&<span style={{color:"#16a34a",marginRight:4,fontSize:10}}>●</span>}
                         -{t.drawdown}%
                       </td>
                       <td style={S.td}>{fmt$(t.triggerPrice)}</td>
                       <td style={S.td}>{t.pct}%</td>
                       <td style={S.tdM}>{fmt$(t.amount)}</td>
-                      <td style={S.td}><button onClick={()=>useTier(t.drawdown)} style={active?S.useBtnA:S.useBtn}>Use</button></td>
+                      <td style={S.td}><button onClick={()=>useTier(t.drawdown)} style={active?S.useBtnA:triggered?{...S.useBtn,borderColor:"#16a34a",color:"#16a34a"}:S.useBtn}>Use</button></td>
                     </tr>
                   );
                 })}
@@ -534,7 +582,7 @@ function TickerSim({ticker}){
                 <input type="text" readOnly value={fmtU(prevUnits)} style={S.inpRO}/>
               </div>
               <div style={{display:"flex",gap:8,alignItems:"flex-end"}}>
-                <button onClick={()=>{const t=tierData.find(t=>t.drawdown===activeTier);if(t)setAmount(t.amount);}} style={S.sugBtn}>Suggest</button>
+                <button onClick={smartSuggest} style={S.sugBtn} title="Auto-detects highest triggered tier">Suggest</button>
                 <button onClick={execTrade} style={S.exeBtn}>Execute Trade</button>
               </div>
             </div>
