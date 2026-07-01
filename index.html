@@ -64,9 +64,16 @@ const EVENTS = [
 ];
 
 const CORS_PROXIES = [
-  u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`,
-  u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  // Direct attempt first (works if target allows CORS from github.io)
+  u=>u,
+  // Corsfix — free for open source, no key, github.io supported
+  u=>`https://proxy.corsfix.com/?${encodeURIComponent(u)}`,
+  // ThingProxy — reliable public proxy
+  u=>`https://thingproxy.freeboard.io/fetch/${u}`,
+  // CodeTabs — rate limited but stable
   u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  // AllOrigins fallback
+  u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -82,13 +89,20 @@ const dayN  = (ds,ep)=>Math.round((new Date(ds)-ep)/86400000);
 async function fetchProxy(url){
   let last;
   for(const wrap of CORS_PROXIES){
+    const wrapped=wrap(url);
     try{
-      const r=await fetch(wrap(url),{signal:AbortSignal.timeout(8000)});
+      const r=await fetch(wrapped,{signal:AbortSignal.timeout(12000)});
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       const t=await r.text();
       if(!t||t.length<20) throw new Error("empty");
+      // Reject HTML error pages returned as 200
+      if(t.trim().startsWith("<html")||t.trim().startsWith("<!DOCTYPE")) throw new Error("got HTML not data");
+      console.log("[CBS] data via:", wrapped===url?"direct":new URL(wrapped).hostname);
       return t;
-    }catch(e){last=e;}
+    }catch(e){
+      console.warn("[CBS] proxy failed:", wrapped===url?"direct":wrapped.split("/")[2], e.message);
+      last=e;
+    }
   }
   throw last||new Error("all proxies failed");
 }
@@ -127,20 +141,28 @@ async function fetchStooq(sym){
 
 async function loadPrices(ticker){
   const cacheKey=`cbs_prices_v2_${ticker.id}`;
-  for(const attempt of [
-    ()=>fetchYahoo(ticker.yahooSym),
-    ()=>fetchStooq(ticker.stooqSym),
-  ]){
+  const attempts=[
+    {label:"Yahoo Finance", fn:()=>fetchYahoo(ticker.yahooSym)},
+    {label:"Stooq",         fn:()=>fetchStooq(ticker.stooqSym)},
+  ];
+  for(const {label,fn} of attempts){
     try{
-      const rows=await attempt();
+      const rows=await fn();
       if(rows.length<50) throw new Error("too few rows");
       try{localStorage.setItem(cacheKey,JSON.stringify({rows,ts:Date.now()}));}catch(e){}
-      return {rows,source:"live"};
-    }catch(e){}
+      console.log("[CBS] loaded",rows.length,"rows from",label);
+      return {rows,source:"live",sourceLabel:label};
+    }catch(e){
+      console.warn("[CBS]",label,"failed:",e.message);
+    }
   }
   try{
     const c=localStorage.getItem(cacheKey);
-    if(c){const{rows,ts}=JSON.parse(c);return{rows,source:"cached",cacheDate:new Date(ts).toLocaleDateString()};}
+    if(c){
+      const{rows,ts}=JSON.parse(c);
+      console.log("[CBS] using cached data from",new Date(ts).toLocaleDateString());
+      return{rows,source:"cached",cacheDate:new Date(ts).toLocaleDateString()};
+    }
   }catch(e){}
   return {rows:[],source:"none"};
 }
@@ -372,7 +394,7 @@ function TickerSim({ticker}){
             <span style={{...S.dot,background:"#ef4444"}}/>
           )}
           <span style={S.statusTxt}>
-            {loading?"Fetching data…":priceData.source==="live"?"Live data":priceData.source==="cached"?"Cached":"No data"}
+            {loading?"Fetching data…":priceData.source==="live"?`Live · ${priceData.sourceLabel||""}`:priceData.source==="cached"?`Cached (${priceData.cacheDate})`:"No data"}
           </span>
         </div>
       </div>
