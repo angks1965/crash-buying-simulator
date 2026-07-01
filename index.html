@@ -63,7 +63,7 @@ const EVENTS = [
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 const FH_KEY  = "cbs_fh_key_v1"; // Finnhub — live quotes only
-const CACHE_V = "cbs_v12"; // v12: SPX real index via ^spx/^GSPC, YF live quote
+const CACHE_V = "cbs_v13"; // v13: no sibling sharing, each ticker independent
 const getKey  = k=>{ try{return localStorage.getItem(k)||"";}catch(e){return "";} };
 const saveKey = (k,v)=>{ try{localStorage.setItem(k,v.trim());}catch(e){} };
 
@@ -812,11 +812,8 @@ function App(){
     setPriceStore(s=>({...s,[next]:{...s[next],source:"loading"}}));
     fetchLive(ticker, null, status=>setPriceStore(s=>({...s,[next]:{...s[next],source:status==="stooq"?"loading-stooq":"loading-yahoo"}})))
       .then(result=>{
-        // Share result with sibling tickers (same avSym) e.g. SPX shares SPY's data
-        const siblings=TICKERS.filter(t=>t.avSym===ticker.avSym&&t.id!==ticker.id);
-        const updates={[next]:result};
-        for(const sib of siblings){toCache(sib.id,result.rows);updates[sib.id]=result;}
-        setPriceStore(s=>({...s,...updates}));
+        // Each ticker fetches independently — no cross-contamination
+        setPriceStore(s=>({...s,[next]:result}));
         setFetching(null);
       })
       .catch(e=>{
