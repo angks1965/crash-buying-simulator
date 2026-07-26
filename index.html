@@ -491,7 +491,22 @@ function TickerSim({ticker,priceData,fhKey,refLast}){
                : priceData.source==="cached"?"#c9862b":priceData.source==="loading"?"#c9862b":"#c4352b";
 
   const hoverPt = (hoverIdx!==null&&series[hoverIdx])?series[hoverIdx]:null;
-  const hoverPct = hoverPt&&geo ? Math.min(90,Math.max(2,(geo.x(hoverIdx)/W)*100)) : 50;
+  // Position the hover tooltip in fixed (viewport) coordinates, clamped so it
+  // can never be dragged past the edge of the browser window — the marker can
+  // reach the far edge of the chart, but the tooltip stops short and flips
+  // to the other side of the point instead of running off-screen.
+  const tooltipStyle=useMemo(()=>{
+    if(!hoverPt||!geo||!chartRef.current) return null;
+    const rect=chartRef.current.getBoundingClientRect();
+    const pxX=rect.left+(geo.x(hoverIdx)/W)*rect.width;
+    const margin=8, estW=280;
+    const vw=window.innerWidth, vh=window.innerHeight;
+    let left=pxX+14;
+    if(left+estW>vw-margin) left=pxX-14-estW;      // flip to the left of the point
+    left=Math.max(margin,Math.min(left,vw-estW-margin));
+    const top=Math.max(margin,Math.min(rect.top+8,vh-40));
+    return {left,top};
+  },[hoverPt,hoverIdx,geo]);
 
   return (
     <div>
@@ -734,8 +749,8 @@ function TickerSim({ticker,priceData,fhKey,refLast}){
                 ):`No ${ticker.id} data yet — press Refresh in the DATA bar, or bake a dataset.`}
               </div>
             )}
-            {hoverPt&&(
-              <div style={{...S.tooltip,left:`${hoverPct}%`}}>
+            {hoverPt&&tooltipStyle&&(
+              <div style={{...S.tooltip,left:tooltipStyle.left,top:tooltipStyle.top}}>
                 Day {hoverIdx+1} · {fmtDt(hoverPt.date)} · {P(hoverPt.close)} · DD {(hoverPt.drawdown*100).toFixed(1)}%
               </div>
             )}
@@ -1038,7 +1053,7 @@ const styles={
   chartEmpty: {height:220,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:MONO,fontSize:12,color:"#94a3b8",textAlign:"center",padding:"0 20px"},
   spinner:    {width:28,height:28,border:"3px solid #e2e8f0",borderTopColor:NAVY,borderRadius:"50%",animation:"spin 0.8s linear infinite",marginBottom:12},
   axTxt:      {fontFamily:MONO,fontSize:9,fill:"#94a3b8"},
-  tooltip:    {position:"absolute",top:60,transform:"translateX(-8%)",fontFamily:MONO,fontSize:11,background:"#0b2545",color:"#fff",padding:"4px 10px",borderRadius:4,pointerEvents:"none",whiteSpace:"nowrap",boxShadow:"0 2px 8px rgba(0,0,0,.2)"},
+  tooltip:    {position:"fixed",fontFamily:MONO,fontSize:11,background:"#0b2545",color:"#fff",padding:"4px 10px",borderRadius:4,pointerEvents:"none",whiteSpace:"nowrap",boxShadow:"0 2px 8px rgba(0,0,0,.2)",zIndex:1000},
   chartHint:  {fontFamily:MONO,fontSize:9,color:"#94a3b8",textAlign:"center",paddingTop:8,paddingBottom:4},
   tradeGrid:  {},
   fldLbl:     {fontFamily:MONO,fontSize:9,letterSpacing:0.8,color:"#94a3b8",marginBottom:5},
