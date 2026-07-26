@@ -101,7 +101,7 @@ window.addEventListener('error',function(e){
 });
 </script>
 <script type="text/babel">
-const {useState,useEffect,useCallback,useMemo,useRef} = React;
+const {useState,useEffect,useLayoutEffect,useCallback,useMemo,useRef} = React;
 
 // ═══ Config ══════════════════════════════════════════════════════════════════
 // isIndex → price shown as raw index POINTS (no "$"), not purchasable.
@@ -301,6 +301,8 @@ function TickerSim({ticker,priceData,fhKey,refLast}){
   const [liveQuote,setLiveQuote]=useState(null);
   const chartRef=useRef(null);
   const dragRef=useRef(false);
+  const tooltipRef=useRef(null);
+  const [tipW,setTipW]=useState(360); // corrected to the real measured width below
 
   // ── Series: close + running peak + drawdown, computed once per data change ──
   const series=useMemo(()=>{
@@ -494,19 +496,27 @@ function TickerSim({ticker,priceData,fhKey,refLast}){
   // Position the hover tooltip in fixed (viewport) coordinates, clamped so it
   // can never be dragged past the edge of the browser window — the marker can
   // reach the far edge of the chart, but the tooltip stops short and flips
-  // to the other side of the point instead of running off-screen.
+  // to the other side of the point instead of running off-screen. tipW starts
+  // from a generous guess and is corrected to the real measured width below,
+  // before the browser paints, so there's no visible flicker either way.
   const tooltipStyle=useMemo(()=>{
     if(!hoverPt||!geo||!chartRef.current) return null;
     const rect=chartRef.current.getBoundingClientRect();
     const pxX=rect.left+(geo.x(hoverIdx)/W)*rect.width;
-    const margin=8, estW=280;
+    const margin=10;
     const vw=window.innerWidth, vh=window.innerHeight;
     let left=pxX+14;
-    if(left+estW>vw-margin) left=pxX-14-estW;      // flip to the left of the point
-    left=Math.max(margin,Math.min(left,vw-estW-margin));
+    if(left+tipW>vw-margin) left=pxX-14-tipW;      // flip to the left of the point
+    left=Math.max(margin,Math.min(left,vw-tipW-margin));
     const top=Math.max(margin,Math.min(rect.top+8,vh-40));
     return {left,top};
-  },[hoverPt,hoverIdx,geo]);
+  },[hoverPt,hoverIdx,geo,tipW]);
+
+  useLayoutEffect(()=>{
+    if(!hoverPt||!tooltipRef.current) return;
+    const w=tooltipRef.current.offsetWidth;
+    if(w&&Math.abs(w-tipW)>1) setTipW(w);
+  });
 
   return (
     <div>
@@ -750,7 +760,7 @@ function TickerSim({ticker,priceData,fhKey,refLast}){
               </div>
             )}
             {hoverPt&&tooltipStyle&&(
-              <div style={{...S.tooltip,left:tooltipStyle.left,top:tooltipStyle.top}}>
+              <div ref={tooltipRef} style={{...S.tooltip,left:tooltipStyle.left,top:tooltipStyle.top}}>
                 Day {hoverIdx+1} · {fmtDt(hoverPt.date)} · {P(hoverPt.close)} · DD {(hoverPt.drawdown*100).toFixed(1)}%
               </div>
             )}
