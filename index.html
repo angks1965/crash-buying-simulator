@@ -41,16 +41,21 @@
     .cbs-prev-grid{grid-template-columns:repeat(2,1fr);}
   }
 
-  /* Aspect ratio lives on the wrapper, not the SVG. The SVG's viewBox height
-     is set dynamically in JS to match the wrapper's real rendered aspect —
-     that's what keeps the chart from stretching non-uniformly on breakpoints
-     whose ratio differs from the SVG's native coordinate space. */
-  .cbs-chart-wrap{width:100%;aspect-ratio:1200/220;}
+  /* Chart height is a fixed pixel value per breakpoint (matching LCC's own
+     approach: 300px desktop / 260px small screens), NOT a CSS aspect-ratio.
+     Aspect-ratio would make the chart grow taller as width grows within a
+     breakpoint — fine on a small phone, but visibly too tall on a larger
+     phone. A fixed height means the chart only ever gets wider/flatter as
+     the screen widens, never disproportionately tall. The SVG's viewBox is
+     still set dynamically in JS to match this box's real rendered size, so
+     scaling stays uniform (no distortion) regardless of the exact pixel
+     width any given device resolves to. */
+  .cbs-chart-wrap{width:100%;height:220px;}
   @media (max-width:640px){
-    .cbs-chart-wrap{aspect-ratio:5/4;}
+    .cbs-chart-wrap{height:180px;}
   }
   @media (max-height:480px) and (orientation:landscape){
-    .cbs-chart-wrap{aspect-ratio:2.6/1;}
+    .cbs-chart-wrap{height:170px;}
   }
   .cbs-chart-svg{width:100%;height:100%;display:block;touch-action:pan-y;cursor:crosshair;}
 
