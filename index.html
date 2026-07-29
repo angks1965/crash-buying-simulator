@@ -26,19 +26,22 @@
   .cbs-app-hdr{flex-wrap:wrap;}
   .cbs-tab-bar{-webkit-overflow-scrolling:touch;scrollbar-width:thin;}
 
-  .cbs-grid{display:grid;grid-template-columns:380px 1fr;gap:16px;padding:16px 24px 40px;align-items:start;}
+  .cbs-grid{display:grid;grid-template-columns:380px minmax(0,1fr);gap:16px;padding:16px 24px 40px;align-items:start;}
   @media (max-width:900px){
-    .cbs-grid{grid-template-columns:1fr;padding:12px 14px 32px;gap:12px;}
+    .cbs-grid{grid-template-columns:minmax(0,1fr);padding:12px 14px 32px;gap:12px;}
   }
 
-  .cbs-trade-grid{display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1.3fr;gap:12px;padding:14px;}
+  .cbs-trade-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;padding:14px;}
+  @media (max-width:899px){
+    .cbs-trade-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+  }
   @media (max-width:640px){
-    .cbs-trade-grid{grid-template-columns:1fr 1fr;}
+    .cbs-trade-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
   }
 
-  .cbs-prev-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 14px;padding:8px 12px 12px;}
+  .cbs-prev-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 14px;padding:8px 12px 12px;}
   @media (max-width:480px){
-    .cbs-prev-grid{grid-template-columns:repeat(2,1fr);}
+    .cbs-prev-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
   }
 
   /* Chart height is a fixed pixel value per breakpoint (matching LCC's own
@@ -186,7 +189,14 @@ function pack(rows){
 // Nothing here touches the network, so first paint never waits on a fetch.
 function instantRows(id){
   const baked=(window.CBS_BAKED||{})[id];
-  if(baked){ const r=Array.isArray(baked)?baked:unpack(baked); if(r.length>50) return {rows:r,source:"baked",label:"baked-in"}; }
+  if(baked){
+    const r=Array.isArray(baked)?baked:unpack(baked);
+    if(r.length>50){
+      const gen=window.CBS_BAKED._meta&&window.CBS_BAKED._meta.generated;
+      const label=gen?`baked ${new Date(gen).toLocaleDateString()}`:"baked-in";
+      return {rows:r,source:"baked",label};
+    }
+  }
   const seed=(window.CBS_SEED||{})[id];
   if(seed){ const r=unpack(seed); if(r.length>50) return {rows:r,source:"baked",label:"built-in seed"}; }
   try{
@@ -292,7 +302,7 @@ function LegendDot({color,label,dashed,round}){
 }
 
 // ═══ Per-ticker simulator ════════════════════════════════════════════════════
-function TickerSim({ticker,priceData,fhKey,refLast}){
+function TickerSim({ticker,priceData,fhKey,refLast,onRetry,retrying}){
   const IX = ticker.isIndex;
   const HUE = kindHue(ticker);
   const P  = (n,d)=>fmtPx(n,IX,d);          // price / index level
@@ -528,12 +538,13 @@ function TickerSim({ticker,priceData,fhKey,refLast}){
     a.click(); URL.revokeObjectURL(a.href);
   }
 
-  const srcTxt = priceData.source==="baked"  ? `Instant · ${priceData.label} · ${n} days`
+  const srcTxt = retrying                     ? "Retrying…"
+               : priceData.source==="baked"  ? `Instant · ${priceData.label} · ${n} days`
                : priceData.source==="live"   ? `Refreshed · ${priceData.label} · ${n} days`
                : priceData.source==="cached" ? `Cache · ${priceData.cacheDate} · ${n} days`
                : priceData.source==="loading"? "Fetching history…"
                : "No data — press Refresh";
-  const srcDot = priceData.source==="baked"?"#0d7c3f":priceData.source==="live"?"#0d7c3f"
+  const srcDot = retrying?"#c9862b":priceData.source==="baked"?"#0d7c3f":priceData.source==="live"?"#0d7c3f"
                : priceData.source==="cached"?"#c9862b":priceData.source==="loading"?"#c9862b":"#c4352b";
 
   const hoverPt = (hoverIdx!==null&&series[hoverIdx])?series[hoverIdx]:null;
@@ -576,8 +587,11 @@ function TickerSim({ticker,priceData,fhKey,refLast}){
           )}
         </div>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <span style={{...S.dot,background:srcDot,...(priceData.source==="loading"?{animation:"pulse 1.2s infinite"}:{})}}/>
+          <span style={{...S.dot,background:srcDot,...((priceData.source==="loading"||retrying)?{animation:"pulse 1.2s infinite"}:{})}}/>
           <span style={S.statusTxt}>{srcTxt}</span>
+          {priceData.source==="empty"&&!retrying&&(
+            <button onClick={onRetry} style={S.retryBtn}>↻ Retry {ticker.id}</button>
+          )}
         </div>
       </div>
 
@@ -797,11 +811,16 @@ function TickerSim({ticker,priceData,fhKey,refLast}){
               </svg>
             ):(
               <div style={S.chartEmpty}>
-                {priceData.source==="loading"?(
+                {(priceData.source==="loading"||retrying)?(
                   <React.Fragment>
-                    <div style={S.spinner}/>Fetching {ticker.id} price history…
+                    <div style={S.spinner}/>{retrying?`Retrying ${ticker.id}…`:`Fetching ${ticker.id} price history…`}
                   </React.Fragment>
-                ):`No ${ticker.id} data yet — press Refresh in the DATA bar, or bake a dataset.`}
+                ):(
+                  <React.Fragment>
+                    <div>No {ticker.id} data yet — the free data proxies may have failed for this symbol.</div>
+                    <button onClick={onRetry} style={{...S.retryBtn,marginTop:10}}>↻ Retry {ticker.id}</button>
+                  </React.Fragment>
+                )}
               </div>
             )}
             </div>
@@ -833,7 +852,7 @@ function TickerSim({ticker,priceData,fhKey,refLast}){
               <div>
                 <div style={S.fldLbl}>
                   {IX?"LEVEL":"PRICE ($)"}
-                  {priceIsCustom&&<button onClick={()=>setPriceText("")} style={S.fldLblReset} title="Reset to market price">↺ market</button>}
+                  {priceIsCustom&&<button onClick={()=>setPriceText("")} style={S.fldLblReset} title="Reset to market price">↺</button>}
                 </div>
                 <input type="number" value={priceText!==""?priceText:(trPrice?+trPrice.toFixed(2):"")}
                   onChange={e=>setPriceText(e.target.value)}
@@ -929,7 +948,7 @@ function App(){
   const [fhKey,setFhKey]=useState(()=>getKey(FH_KEY));
   const [fhDraft,setFhDraft]=useState(()=>getKey(FH_KEY));
   const [showKeys,setShowKeys]=useState(false);
-  const [busy,setBusy]=useState(null);
+  const [busyIds,setBusyIds]=useState(()=>new Set());
 
   // Synchronous first paint — baked / seeded / cached rows, zero network.
   const [priceStore,setPriceStore]=useState(()=>{
@@ -942,11 +961,15 @@ function App(){
   },[priceStore]);
 
   const bakedCount=TICKERS.filter(t=>priceStore[t.id]?.source==="baked").length;
+  const bakedGenDate=(window.CBS_BAKED&&window.CBS_BAKED._meta&&window.CBS_BAKED._meta.generated)
+    ? new Date(window.CBS_BAKED._meta.generated).toLocaleString() : null;
 
   // Parallel background refresh — every ticker at once, nothing blocks the UI.
+  // Accepts an optional subset of ids so a single failed ticker can be retried
+  // alone, instead of re-hammering all 7 through the shared free CORS proxies.
   const refreshAll=useCallback(async(ids)=>{
     const list=(ids||TICKERS.map(t=>t.id));
-    setBusy("refresh");
+    setBusyIds(s=>new Set([...s,...list]));
     setPriceStore(s=>{const c={...s}; list.forEach(id=>{ if(!c[id].rows.length) c[id]={...c[id],source:"loading"}; }); return c;});
     await Promise.allSettled(list.map(async id=>{
       const t=TICKERS.find(x=>x.id===id);
@@ -958,17 +981,22 @@ function App(){
         setPriceStore(s=>s[id].rows.length?s:{...s,[id]:{...s[id],source:"empty"}});
       }
     }));
-    setBusy(null);
+    setBusyIds(s=>{const n=new Set(s); list.forEach(id=>n.delete(id)); return n;});
   },[]);
 
   // Generates market-data.js — commit it beside index.html for instant loads.
   function bakeData(){
-    const out={};
+    const out={_meta:{generated:new Date().toISOString()}};
     for(const t of TICKERS){ const r=priceStore[t.id]?.rows; if(r?.length>50) out[t.id]=pack(r); }
-    if(!Object.keys(out).length){ alert("No data loaded yet — press Refresh first."); return; }
-    const body="/* Crash Buying Simulator — baked dataset\n   Generated "+new Date().toISOString().slice(0,10)+
-      "\n   Commit this file next to index.html. Every tab then loads instantly,\n"+
-      "   with no network calls and nothing for a corporate proxy to block. */\n"+
+    if(Object.keys(out).length<=1){ alert("No data loaded yet — press Refresh first."); return; }
+    const stamp=out._meta.generated.slice(0,16).replace("T"," ");
+    const body="/* Crash Buying Simulator — baked dataset\n   Generated "+stamp+" UTC\n"+
+      "   Commit this file next to index.html, replacing any older market-data.js —\n"+
+      "   same filename, so re-baking always overwrites the previous version once\n"+
+      "   pushed. The DATA bar and each tab's status line show this exact date once\n"+
+      "   loaded, so you can confirm the live site picked up the new file (a hard\n"+
+      "   refresh may be needed if your browser cached the old one).\n"+
+      "   No network calls and nothing for a corporate proxy to block. */\n"+
       "window.CBS_BAKED = "+JSON.stringify(out)+";\n";
     const a=document.createElement("a");
     a.href=URL.createObjectURL(new Blob([body],{type:"text/javascript"}));
@@ -997,9 +1025,10 @@ function App(){
         <span style={styles.keyLabel}>DATA</span>
         <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:"#334155"}}>
           {bakedCount} of {TICKERS.length} tabs load instantly from baked data
+          {bakedGenDate&&` · file baked ${bakedGenDate}`}
         </span>
-        <button onClick={()=>refreshAll()} disabled={busy==="refresh"} style={styles.keyApplyBtn}>
-          {busy==="refresh"?"⟳ Refreshing…":"⟳ Refresh"}
+        <button onClick={()=>refreshAll()} disabled={busyIds.size>0} style={styles.keyApplyBtn}>
+          {busyIds.size>0?"⟳ Refreshing…":"⟳ Refresh"}
         </button>
         <button onClick={bakeData} style={styles.keyChangeBtn} title="Download market-data.js — commit it beside index.html so every tab loads instantly with no network calls">
           ⬇ Bake data
@@ -1040,7 +1069,8 @@ function App(){
       </div>
 
       <TickerSim key={activeTicker} ticker={ticker}
-        priceData={priceStore[activeTicker]||{rows:[],source:"empty"}} fhKey={fhKey} refLast={refLast}/>
+        priceData={priceStore[activeTicker]||{rows:[],source:"empty"}} fhKey={fhKey} refLast={refLast}
+        onRetry={()=>refreshAll([activeTicker])} retrying={busyIds.has(activeTicker)}/>
     </div>
   );
 }
@@ -1071,6 +1101,7 @@ const styles={
   kindTag:    {fontFamily:MONO,fontSize:9,fontWeight:700,letterSpacing:0.6,borderRadius:10,border:"1px solid",padding:"2px 8px"},
   dot:        {width:8,height:8,borderRadius:"50%",display:"inline-block"},
   statusTxt:  {fontFamily:MONO,fontSize:11,color:"#64748b"},
+  retryBtn:   {fontFamily:MONO,fontSize:10,fontWeight:700,color:"#c9862b",background:"#fffbeb",border:"1px solid #fbd38d",borderRadius:4,padding:"2px 9px",cursor:"pointer"},
   refBanner:  {margin:"0 24px",padding:"12px 16px",background:"rgba(6,182,212,0.07)",border:"1px solid rgba(6,182,212,0.3)",borderRadius:8,fontSize:12},
   refChip:    {fontFamily:MONO,fontSize:11,padding:"3px 12px",borderRadius:12,border:"1px solid",fontWeight:700},
   grid:       {}, // layout fully owned by the .cbs-grid CSS class (needs media queries)
@@ -1121,8 +1152,8 @@ const styles={
   tooltip:    {position:"fixed",fontFamily:MONO,fontSize:11,background:"#0b2545",color:"#fff",padding:"4px 10px",borderRadius:4,pointerEvents:"none",whiteSpace:"nowrap",boxShadow:"0 2px 8px rgba(0,0,0,.2)",zIndex:1000},
   chartHint:  {fontFamily:MONO,fontSize:9,color:"#94a3b8",textAlign:"center",paddingTop:8,paddingBottom:4},
   tradeGrid:  {},
-  fldLbl:     {fontFamily:MONO,fontSize:9,letterSpacing:0.8,color:"#94a3b8",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",gap:6},
-  fldLblReset:{fontFamily:MONO,fontSize:9,color:"#c9862b",background:"none",border:"none",cursor:"pointer",padding:0,letterSpacing:0.3,whiteSpace:"nowrap"},
+  fldLbl:     {fontFamily:MONO,fontSize:9,letterSpacing:0.8,color:"#94a3b8",marginBottom:5,display:"flex",justifyContent:"space-between",alignItems:"center",gap:6,minWidth:0},
+  fldLblReset:{fontFamily:MONO,fontSize:9,color:"#c9862b",background:"none",border:"none",cursor:"pointer",padding:0,letterSpacing:0.3,flexShrink:0},
   actToggle:  {display:"flex",border:`1px solid ${BORDER}`,borderRadius:6,overflow:"hidden"},
   buy:        {flex:1,padding:"9px 0",border:"none",background:"#fff",color:"#0d7c3f",fontFamily:MONO,fontWeight:700,fontSize:12,cursor:"pointer"},
   buyA:       {flex:1,padding:"9px 0",border:"none",background:"#0d7c3f",color:"#fff",fontFamily:MONO,fontWeight:700,fontSize:12,cursor:"pointer"},
