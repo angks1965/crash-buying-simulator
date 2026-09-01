@@ -119,13 +119,13 @@ const {useState,useEffect,useLayoutEffect,useCallback,useMemo,useRef} = React;
 // ═══ Config ══════════════════════════════════════════════════════════════════
 // isIndex → price shown as raw index POINTS (no "$"), not purchasable.
 const TICKERS = [
-  { id:"SPX",  label:"SPX",  fullName:"S&P 500 Index",                 isIndex:true,  yfSym:"^GSPC", stooq:"^spx",    fhSym:null,   buy:["SPY","VOO"] },
-  { id:"NDX",  label:"NDX",  fullName:"Nasdaq-100 Index",              isIndex:true,  yfSym:"^NDX",  stooq:"^ndq",    fhSym:null,   buy:["QQQ"]       },
-  { id:"SPY",  label:"SPY",  fullName:"SPDR S&P 500 ETF",              isIndex:false, yfSym:"SPY",   stooq:"spy.us",  fhSym:"SPY"   },
-  { id:"QQQ",  label:"QQQ",  fullName:"Invesco Nasdaq-100 ETF",        isIndex:false, yfSym:"QQQ",   stooq:"qqq.us",  fhSym:"QQQ"   },
-  { id:"VOO",  label:"VOO",  fullName:"Vanguard S&P 500 ETF",          isIndex:false, yfSym:"VOO",   stooq:"voo.us",  fhSym:"VOO"   },
-  { id:"URTH", label:"URTH", fullName:"iShares MSCI World ETF",        isIndex:false, yfSym:"URTH",  stooq:"urth.us", fhSym:"URTH"  },
-  { id:"VXUS", label:"VXUS", fullName:"Vanguard Total Intl Stock ETF", isIndex:false, yfSym:"VXUS",  stooq:"vxus.us", fhSym:"VXUS"  },
+  { id:"SPX",  label:"SPX",  fullName:"S&P 500 Index",                 isIndex:true,  yfSym:"^GSPC", stooq:"^spx",    fhSym:null,   tdSym:"SPX",  fredSeries:"SP500", nqSym:"SPX", buy:["SPY","VOO"] },
+  { id:"NDX",  label:"NDX",  fullName:"Nasdaq-100 Index",              isIndex:true,  yfSym:"^NDX",  stooq:"^ndq",    fhSym:null,   tdSym:"NDX",  nqSym:"NDX", buy:["QQQ"]       },
+  { id:"SPY",  label:"SPY",  fullName:"SPDR S&P 500 ETF",              isIndex:false, yfSym:"SPY",   stooq:"spy.us",  fhSym:"SPY",  tdSym:"SPY"   },
+  { id:"QQQ",  label:"QQQ",  fullName:"Invesco Nasdaq-100 ETF",        isIndex:false, yfSym:"QQQ",   stooq:"qqq.us",  fhSym:"QQQ",  tdSym:"QQQ"   },
+  { id:"VOO",  label:"VOO",  fullName:"Vanguard S&P 500 ETF",          isIndex:false, yfSym:"VOO",   stooq:"voo.us",  fhSym:"VOO",  tdSym:"VOO"   },
+  { id:"URTH", label:"URTH", fullName:"iShares MSCI World ETF",        isIndex:false, yfSym:"URTH",  stooq:"urth.us", fhSym:"URTH", tdSym:"URTH"  },
+  { id:"VXUS", label:"VXUS", fullName:"Vanguard Total Intl Stock ETF", isIndex:false, yfSym:"VXUS",  stooq:"vxus.us", fhSym:"VXUS", tdSym:"VXUS"  },
 ];
 
 // Index vs ETF get distinct accent colors, used on tab labels, ticker badges,
@@ -146,6 +146,7 @@ const DD_SCALE = 0.50; // drawdown bar spans 0% → -50%, ticks land at 20/30/40
 
 // ═══ Storage ═════════════════════════════════════════════════════════════════
 const FH_KEY  = "cbs_fh_key_v1";
+const TD_KEY  = "cbs_td_key_v1";
 const CACHE_V = "cbs_v16";
 const getKey  = k=>{ try{return localStorage.getItem(k)||"";}catch(e){return "";} };
 const saveKey = (k,v)=>{ try{localStorage.setItem(k,v.trim());}catch(e){} };
@@ -153,7 +154,7 @@ const cacheKey= id=>`${CACHE_V}_${id}`;
 
 (function purgeOldCache(){
   try{
-    const keep=new Set([FH_KEY,...TICKERS.map(t=>cacheKey(t.id)),
+    const keep=new Set([FH_KEY,TD_KEY,...TICKERS.map(t=>cacheKey(t.id)),
       ...TICKERS.flatMap(t=>[`cbs_tx_v2_${t.id}`,`cbs_cash_v2_${t.id}`])]);
     Object.keys(localStorage).filter(k=>k.startsWith("cbs_")&&!keep.has(k)).forEach(k=>localStorage.removeItem(k));
   }catch(e){}
@@ -241,14 +242,103 @@ async function fetchYF(sym){
   return ts.map((t,i)=>cl[i]>0?{date:new Date(t*1000).toISOString().slice(0,10),close:cl[i]}:null)
            .filter(Boolean).sort((a,b)=>a.date.localeCompare(b.date));
 }
-async function refreshHistory(t){
+// Twelve Data's REST API sends Access-Control-Allow-Origin: * on its
+// responses, so — unlike Stooq (JS bot-check page) and unauthenticated
+// Yahoo (401s without a crumb/cookie the browser can't obtain) — this can
+// be called straight from the browser with no CORS proxy in the middle.
+// Needs a free API key (twelvedata.com/pricing — 800 requests/day, 8/min).
+async function fetchTwelveData(sym,tdKey){
+  const url=`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(sym)}&interval=1day&outputsize=5000&order=ASC&apikey=${encodeURIComponent(tdKey)}`;
+  const res=await fetch(url,{signal:AbortSignal.timeout(15000)});
+  const j=await res.json().catch(()=>null);
+  if(!j) throw new Error("Twelve Data: bad response");
+  if(j.status==="error"||!Array.isArray(j.values)) throw new Error(`Twelve Data: ${j.message||"symbol not found"}`);
+  const rows=j.values.map(v=>({date:(v.datetime||"").slice(0,10),close:parseFloat(v.close)}))
+    .filter(r=>r.date&&!isNaN(r.close)&&r.close>0)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  if(rows.length<=50) throw new Error("Twelve Data: too few rows");
+  return rows;
+}
+// FRED (Federal Reserve Bank of St. Louis) publishes S&P 500 daily closes
+// as a genuinely free, no-key, no-rate-limit CSV — this is a real index
+// license the Fed negotiated with S&P Dow Jones Indices directly, not a
+// scrape. Only 10 years of history and no equivalent Nasdaq-100 series
+// exists on FRED, so this only ever helps SPX. No CORS proxy needed for
+// government open-data endpoints like this.
+async function fetchFred(seriesId){
+  const res=await fetch(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(seriesId)}`,
+    {signal:AbortSignal.timeout(15000)});
+  if(!res.ok) throw new Error(`FRED: HTTP ${res.status}`);
+  const csv=await res.text();
+  const lines=csv.trim().split("\n");
+  if(lines.length<2) throw new Error("FRED: empty response");
+  const rows=lines.slice(1).map(l=>{
+    const [date,val]=l.split(",");
+    const c=parseFloat(val);
+    return (!date||val==="."||isNaN(c)||c<=0)?null:{date:date.trim(),close:c};
+  }).filter(Boolean).sort((a,b)=>a.date.localeCompare(b.date));
+  if(rows.length<=50) throw new Error("FRED: too few rows");
+  return rows;
+}
+// Nasdaq's own site loads its index charts from this endpoint client-side,
+// so it's plausibly CORS-open the same way — but unlike FRED/Twelve Data
+// this hasn't been verified against a real response, so treat it as a
+// best-effort extra layer, not a guaranteed source.
+async function fetchNasdaqApi(sym){
+  const to=new Date().toISOString().slice(0,10);
+  const url=`https://api.nasdaq.com/api/quote/${encodeURIComponent(sym)}/historical?assetclass=index&fromdate=2015-01-01&todate=${to}&limit=9999`;
+  const res=await fetch(url,{signal:AbortSignal.timeout(15000),headers:{"Accept":"application/json"}});
+  if(!res.ok) throw new Error(`Nasdaq API: HTTP ${res.status}`);
+  const j=await res.json().catch(()=>null);
+  const tr=j?.data?.tradesTable?.rows;
+  if(!Array.isArray(tr)||!tr.length) throw new Error("Nasdaq API: no rows");
+  const rows=tr.map(r=>{
+    const [m,d,y]=(r.date||"").split("/");
+    const c=parseFloat(String(r.close||"").replace(/[$,]/g,""));
+    return (!m||!d||!y||isNaN(c)||c<=0)?null:{date:`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`,close:c};
+  }).filter(Boolean).sort((a,b)=>a.date.localeCompare(b.date));
+  if(rows.length<=50) throw new Error("Nasdaq API: too few rows");
+  return rows;
+}
+async function refreshHistory(t,tdKey){
+  let tdErr=null;
+  if(t.tdSym&&tdKey&&tdKey.length>5){
+    // Primary path: direct, unproxied, CORS-friendly — this is the one that
+    // actually gets triggered fresh every time you press Refresh. If it
+    // fails — e.g. an index symbol isn't included on the caller's Twelve
+    // Data plan — fall through to the extra sources / proxied chain below
+    // instead of giving up, so a plan gap on one ticker doesn't just error.
+    try{
+      const rows=await fetchTwelveData(t.tdSym,tdKey);
+      return {rows,label:"Twelve Data"};
+    }catch(e){
+      tdErr=e.message;
+      console.warn(`Twelve Data failed for ${t.id}, falling back:`,tdErr);
+    }
+  }
+  // Index-only extra layers — both free/no-key, tried before the proxied
+  // chain since they're direct and (for FRED) confirmed reliable.
+  if(t.fredSeries){
+    try{ const rows=await fetchFred(t.fredSeries); return {rows,label:"FRED (St. Louis Fed)"}; }
+    catch(e){ console.warn(`FRED failed for ${t.id}:`,e.message); }
+  }
+  if(t.nqSym){
+    try{ const rows=await fetchNasdaqApi(t.nqSym); return {rows,label:"Nasdaq API"}; }
+    catch(e){ console.warn(`Nasdaq API failed for ${t.id}:`,e.message); }
+  }
+  // Everything above failed — fall back to the proxied Stooq/Yahoo chain,
+  // which may or may not be reachable right now.
   try{
     const rows=parseStooq(await viaProxy(`https://stooq.com/q/d/l/?s=${t.stooq}&i=d&d1=20150101`,false));
     if(rows.length>50) return {rows,label:"Stooq"};
   }catch(e){}
-  const rows=await fetchYF(t.yfSym);
-  if(rows.length>50) return {rows,label:"Yahoo Finance"};
-  throw new Error("no source reachable");
+  try{
+    const rows=await fetchYF(t.yfSym);
+    if(rows.length>50) return {rows,label:"Yahoo Finance"};
+  }catch(e){}
+  // Every path failed — surface the Twelve Data reason if we have one,
+  // since that's usually the most specific/actionable of the three.
+  throw new Error(tdErr?`${tdErr} (Stooq/Yahoo also unreachable)`:"no source reachable");
 }
 async function fetchQuote(t,fhKey){
   if(t.fhSym&&fhKey&&fhKey.length>5){
@@ -543,6 +633,7 @@ function TickerSim({ticker,priceData,fhKey,refLast,onRetry,retrying}){
                : priceData.source==="live"   ? `Refreshed · ${priceData.label} · ${n} days`
                : priceData.source==="cached" ? `Cache · ${priceData.cacheDate} · ${n} days`
                : priceData.source==="loading"? "Fetching history…"
+               : priceData.source==="error"  ? `Refresh failed · ${priceData.label||"unknown error"}`
                : "No data — press Refresh";
   const srcDot = retrying?"#c9862b":priceData.source==="baked"?"#0d7c3f":priceData.source==="live"?"#0d7c3f"
                : priceData.source==="cached"?"#c9862b":priceData.source==="loading"?"#c9862b":"#c4352b";
@@ -589,7 +680,7 @@ function TickerSim({ticker,priceData,fhKey,refLast,onRetry,retrying}){
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <span style={{...S.dot,background:srcDot,...((priceData.source==="loading"||retrying)?{animation:"pulse 1.2s infinite"}:{})}}/>
           <span style={S.statusTxt}>{srcTxt}</span>
-          {priceData.source==="empty"&&!retrying&&(
+          {(priceData.source==="empty"||priceData.source==="error")&&!retrying&&(
             <button onClick={onRetry} style={S.retryBtn}>↻ Retry {ticker.id}</button>
           )}
         </div>
@@ -947,6 +1038,8 @@ function App(){
   const [activeTicker,setActiveTicker]=useState("SPX");
   const [fhKey,setFhKey]=useState(()=>getKey(FH_KEY));
   const [fhDraft,setFhDraft]=useState(()=>getKey(FH_KEY));
+  const [tdKey,setTdKey]=useState(()=>getKey(TD_KEY));
+  const [tdDraft,setTdDraft]=useState(()=>getKey(TD_KEY));
   const [showKeys,setShowKeys]=useState(false);
   const [busyIds,setBusyIds]=useState(()=>new Set());
 
@@ -974,15 +1067,19 @@ function App(){
     await Promise.allSettled(list.map(async id=>{
       const t=TICKERS.find(x=>x.id===id);
       try{
-        const {rows,label}=await refreshHistory(t);
+        const {rows,label}=await refreshHistory(t,tdKey);
         toCache(id,rows);
         setPriceStore(s=>({...s,[id]:{rows,source:"live",label}}));
       }catch(e){
-        setPriceStore(s=>s[id].rows.length?s:{...s,[id]:{...s[id],source:"empty"}});
+        // Surface the failure instead of silently keeping stale data with no
+        // sign anything went wrong — old rows (if any) stay on screen so the
+        // chart doesn't blank out, but the status line now says "failed"
+        // and shows why, so a bad key / dead proxy / rate limit is visible.
+        setPriceStore(s=>({...s,[id]:{...s[id],source:"error",label:String(e.message||e).slice(0,80)}}));
       }
     }));
     setBusyIds(s=>{const n=new Set(s); list.forEach(id=>n.delete(id)); return n;});
-  },[]);
+  },[tdKey]);
 
   // Generates market-data.js — commit it beside index.html for instant loads.
   function bakeData(){
@@ -1003,7 +1100,11 @@ function App(){
     a.download="market-data.js"; a.click(); URL.revokeObjectURL(a.href);
   }
 
-  function applyKeys(){ const fh=fhDraft.trim(); saveKey(FH_KEY,fh); setFhKey(fh); setShowKeys(false); }
+  function applyKeys(){
+    const fh=fhDraft.trim(); saveKey(FH_KEY,fh); setFhKey(fh);
+    const td=tdDraft.trim(); saveKey(TD_KEY,td); setTdKey(td);
+    setShowKeys(false);
+  }
 
   const ticker=TICKERS.find(t=>t.id===activeTicker);
 
@@ -1034,18 +1135,28 @@ function App(){
           ⬇ Bake data
         </button>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
-          <span style={styles.keySubLabel}>Finnhub key (optional — live quotes only):</span>
           {showKeys?(
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <input type="text" placeholder="Paste Finnhub key…" value={fhDraft}
-                onChange={e=>setFhDraft(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")applyKeys();}}
-                style={{...styles.keyInput,width:180}}/>
+            <div style={{display:"flex",gap:14,alignItems:"center",flexWrap:"wrap"}}>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <span style={styles.keySubLabel}>Twelve Data key (history refresh):</span>
+                <input type="text" placeholder="Paste Twelve Data key…" value={tdDraft}
+                  onChange={e=>setTdDraft(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")applyKeys();}}
+                  style={{...styles.keyInput,width:180}}/>
+                <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener" style={styles.keyLink}>Get free ↗</a>
+              </div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <span style={styles.keySubLabel}>Finnhub key (live quote only):</span>
+                <input type="text" placeholder="Paste Finnhub key…" value={fhDraft}
+                  onChange={e=>setFhDraft(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")applyKeys();}}
+                  style={{...styles.keyInput,width:180}}/>
+                <a href="https://finnhub.io/register" target="_blank" rel="noopener" style={styles.keyLink}>Get free ↗</a>
+              </div>
               <button onClick={applyKeys} style={styles.keyApplyBtn}>Save</button>
-              <a href="https://finnhub.io/register" target="_blank" rel="noopener" style={styles.keyLink}>Get free ↗</a>
             </div>
           ):(
             <button onClick={()=>setShowKeys(true)} style={styles.keyChangeBtn}>
-              {fhKey?`Finnhub ****${fhKey.slice(-4)}`:"+ Add Finnhub key"}
+              {tdKey?`Twelve Data ****${tdKey.slice(-4)}`:"+ Add Twelve Data key"}
+              {fhKey?` · Finnhub ****${fhKey.slice(-4)}`:""}
             </button>
           )}
         </div>
